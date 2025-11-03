@@ -1,0 +1,28 @@
+# ============================
+# Mini-demo Azure DevOps
+# ============================
+
+trigger:
+  branches:
+    include:
+      - main   # déclenchement automatique sur la branche main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+  # Installer Python
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.10'
+    displayName: 'Sélection de Python 3.10'
+
+  # Exécuter le script de test
+  - script: |
+      python test.py
+    displayName: 'Exécution du script Python'
+
+  # Message de succès
+  - script: |
+      echo "✅ Pipeline exécuté avec succès !"
+    displayName: 'Fin du pipeline'
