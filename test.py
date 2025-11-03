@@ -1,2 +1,2 @@
 # test.py
-print("Hello from Azure DevOps Demo! 🚀")
+print("test par moi! 🚀")
