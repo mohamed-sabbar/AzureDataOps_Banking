@@ -1,28 +1,38 @@
-# ============================
-# Mini-demo Azure DevOps
-# ============================
-
 trigger:
   branches:
     include:
-      - main   # déclenchement automatique sur la branche main
+      - main  # Le pipeline démarre sur les commits vers main
 
 pool:
   vmImage: 'ubuntu-latest'
 
+variables:
+- group: variable group   # 👈 Le nom du groupe de variables que tu as créé dans Azure DevOps
+
 steps:
-  # Installer Python
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '3.10'
-    displayName: 'Sélection de Python 3.10'
+# Étape 1 - Choisir la version Python
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '3.10'
 
-  # Exécuter le script de test
-  - script: |
-      python test.py
-    displayName: 'Exécution du script Python'
+# Étape 2 - Installer les dépendances
+- script: |
+    pip install -r requirements.txt
+    pip install databricks-cli
+  displayName: 'Installer dépendances'
 
-  # Message de succès
-  - script: |
-      echo "✅ Pipeline exécuté avec succès !"
-    displayName: 'Fin du pipeline'
+# Étape 3 - Configurer Databricks CLI et importer les notebooks
+- script: |
+    databricks configure --token <<EOF
+    https://adb-1119135389290183.3.azuredatabricks.net
+    $(DATABRICKS_TOKEN)
+    EOF
+    databricks workspace import_dir notebooks /Workspace/Users/mohamedazrou2003@gmail.com --overwrite
+    echo "✅ Notebooks importés dans Databricks"
+  displayName: 'Déployer notebooks Databricks'
+
+# Étape 4 - Exécuter un job Databricks
+- script: |
+    databricks jobs run-now --job-id <ID_JOB>
+    echo "🚀 Job Databricks exécuté"
+  displayName: 'Exécuter job Databricks'
