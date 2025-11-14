@@ -7,42 +7,39 @@ pool:
   vmImage: 'ubuntu-latest'
 
 variables:
-- group: variable group  # ton groupe de variables Azure DevOps
+  - group: variable group  # ton groupe de variables Azure DevOps
 
 steps:
-
-# Installer Python
-- task: UsePythonVersion@0
-  inputs:
-    versionSpec: '3.10'
-
-# Installer requirements
-- script: |
-    pip install -r requirements.txt
-    pip install databricks-cli
-  displayName: 'Installer dépendances'
-
-# Configuration Databricks CLI
-- script: |
-    export DATABRICKS_HOST=https://adb-1119135389290183.3.azuredatabricks.net
-    export DATABRICKS_TOKEN=$(DATABRICKS_TOKEN)
-
-    databricks configure --token <<EOF
-$DATABRICKS_HOST
-$DATABRICKS_TOKEN
-EOF
-
-    echo "🔐 CLI Databricks configurée"
-  displayName: 'Configurer Databricks CLI'
-
-# Déployer les notebooks dans Databricks
-- script: |
-    databricks workspace import_dir notebooks /Workspace/Users/mohamedazrou2003@gmail.com --overwrite
-    echo "📥 Notebooks importés dans Databricks"
-  displayName: 'Déployer notebooks Databricks'
-
-# Exécuter le job Databricks
-- script: |
-    databricks jobs run-now --job-id 89
-    echo "🚀 Job Databricks exécuté"
-  displayName: 'Lancer job Databricks'
+  # Installer Python
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.10'
+  
+  # Installer requirements
+  - script: |
+      pip install -r requirements.txt
+      pip install databricks-cli
+    displayName: 'Installer dépendances'
+  
+  # Configuration Databricks CLI
+  - script: |
+      databricks configure --token <<EOF
+      $(DATABRICKS_HOST)
+      $(DATABRICKS_TOKEN)
+      EOF
+      echo "🔐 CLI Databricks configurée"
+    displayName: 'Configurer Databricks CLI'
+    env:
+      DATABRICKS_HOST: https://adb-1119135389290183.3.azuredatabricks.net
+  
+  # Déployer les notebooks dans Databricks
+  - script: |
+      databricks workspace import_dir notebooks /Workspace/Users/mohamedazrou2003@gmail.com --overwrite
+      echo "📥 Notebooks importés dans Databricks"
+    displayName: 'Déployer notebooks Databricks'
+  
+  # Exécuter le job Databricks
+  - script: |
+      databricks jobs run-now --job-id 89
+      echo "🚀 Job Databricks exécuté"
+    displayName: 'Lancer job Databricks'
