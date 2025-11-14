@@ -4,7 +4,7 @@ trigger:
       - main
   paths:
     include:
-      - notebooks/**  # Déclenche uniquement si des fichiers dans notebooks/ changent
+      - notebooks/**
 
 pool:
   vmImage: 'ubuntu-latest'
@@ -13,6 +13,8 @@ variables:
   - group: variable group
   - name: DATABRICKS_HOST
     value: 'https://adb-1119135389290183.3.azuredatabricks.net'
+  - name: DATABRICKS_WORKSPACE_PATH
+    value: '/Workspace/Users/mohamedazrou2003@gmail.com'
 
 steps:
   # Installer Python
@@ -29,76 +31,163 @@ steps:
   
   # Configuration Databricks CLI
   - script: |
-      echo "Configuration de Databricks CLI..."
-      echo "$(DATABRICKS_HOST)" > ~/.databrickscfg_host
-      echo "$(DATABRICKS_TOKEN)" > ~/.databrickscfg_token
-      
       cat > ~/.databrickscfg <<EOF
       [DEFAULT]
       host = $(DATABRICKS_HOST)
       token = $(DATABRICKS_TOKEN)
       EOF
       
+      databricks jobs configure --version=2.1
       echo "✅ CLI Databricks configurée"
     displayName: 'Configurer Databricks CLI'
   
-  # Vérifier les fichiers modifiés
+  # Détecter et déployer les notebooks modifiés
   - script: |
-      echo "📂 Fichiers modifiés dans ce commit:"
-      git diff --name-only HEAD~1 HEAD | grep "^notebooks/" || echo "Aucun notebook modifié"
-    displayName: 'Afficher fichiers modifiés'
-  
-  # Déployer les notebooks dans Databricks
-  - script: |
-      echo "📤 Déploiement des notebooks..."
-      databricks workspace import_dir notebooks /Workspace/Users/mohamedazrou2003@gmail.com --overwrite
+      echo "🔍 Détection des notebooks modifiés..."
+      
+      # Obtenir les fichiers modifiés dans le dossier notebooks
+      CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | grep "^notebooks/" || true)
+      
+      if [ -z "$CHANGED_FILES" ]; then
+        echo "⚠️ Aucun notebook modifié"
+        echo "##vso[task.setvariable variable=HAS_CHANGES]false"
+        exit 0
+      fi
+      
+      echo "📝 Notebooks modifiés:"
+      echo "$CHANGED_FILES"
+      echo "##vso[task.setvariable variable=HAS_CHANGES]true"
+      
+      # Déployer tous les notebooks (pour s'assurer de la cohérence)
+      echo ""
+      echo "📤 Déploiement de tous les notebooks..."
+      databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
       
       if [ $? -eq 0 ]; then
-        echo "✅ Notebooks importés avec succès dans Databricks"
+        echo "✅ Notebooks déployés avec succès"
       else
-        echo "❌ Erreur lors de l'import des notebooks"
-        exit 1
-      fi
-    displayName: 'Déployer notebooks Databricks'
-  
-  # Lister les notebooks déployés
-  - script: |
-      echo "📋 Notebooks déployés:"
-      databricks workspace ls /Workspace/Users/mohamedazrou2003@gmail.com
-    displayName: 'Vérifier notebooks déployés'
-  
-  # Exécuter le job Databricks
-  - script: |
-      echo "🚀 Lancement du job Databricks (ID: 89)..."
-      RUN_ID=$(databricks jobs run-now --job-id 89 | jq -r '.run_id')
-      
-      if [ -z "$RUN_ID" ]; then
-        echo "❌ Erreur: Impossible de lancer le job"
+        echo "❌ Erreur lors du déploiement"
         exit 1
       fi
       
-      echo "✅ Job lancé avec Run ID: $RUN_ID"
-      echo "🔗 Suivi: $(DATABRICKS_HOST)/#job/89/run/$RUN_ID"
+      # Lister les notebooks déployés
+      echo ""
+      echo "📋 Notebooks disponibles dans Databricks:"
+      databricks workspace ls $(DATABRICKS_WORKSPACE_PATH)
       
-      # Optionnel: Attendre la fin du job
-      echo "⏳ Attente de la fin du job..."
-      while true; do
-        STATE=$(databricks runs get --run-id $RUN_ID | jq -r '.state.life_cycle_state')
-        echo "État actuel: $STATE"
-        
-        if [ "$STATE" = "TERMINATED" ] || [ "$STATE" = "SKIPPED" ] || [ "$STATE" = "INTERNAL_ERROR" ]; then
-          RESULT=$(databricks runs get --run-id $RUN_ID | jq -r '.state.result_state')
-          echo "Résultat final: $RESULT"
+    displayName: 'Déployer notebooks modifiés'
+  
+  # Exécuter les notebooks modifiés
+  - script: |
+      if [ "$(HAS_CHANGES)" = "false" ]; then
+        echo "⏭️ Aucun changement, skip de l'exécution"
+        exit 0
+      fi
+      
+      cat > execute_notebooks.py <<'PYTHON_SCRIPT'
+      import os
+      import sys
+      import time
+      import json
+      from databricks_cli.sdk.api_client import ApiClient
+      from databricks_cli.jobs.api import JobsApi
+      from databricks_cli.runs.api import RunsApi
+      
+      # Configuration
+      host = os.environ['DATABRICKS_HOST']
+      token = os.environ['DATABRICKS_TOKEN']
+      workspace_path = os.environ['DATABRICKS_WORKSPACE_PATH']
+      
+      # Créer le client API
+      api_client = ApiClient(host=host, token=token)
+      runs_api = RunsApi(api_client)
+      
+      # Liste des notebooks à exécuter (dans l'ordre)
+      notebooks = [
+          "notebook1.py",  # Remplace par tes vrais noms
+          "notebook2.py",
+          "notebook3.py"
+      ]
+      
+      def run_notebook(notebook_path):
+          """Exécute un notebook et attend la fin"""
+          print(f"\n🚀 Exécution du notebook: {notebook_path}")
           
-          if [ "$RESULT" = "SUCCESS" ]; then
-            echo "✅ Job terminé avec succès"
-            exit 0
-          else
-            echo "❌ Job échoué avec état: $RESULT"
-            exit 1
-          fi
-        fi
-        
-        sleep 30
-      done
-    displayName: 'Exécuter job Databricks'
+          try:
+              # Paramètres d'exécution
+              run_params = {
+                  "notebook_task": {
+                      "notebook_path": f"{workspace_path}/{notebook_path}",
+                      "base_parameters": {}
+                  },
+                  "new_cluster": {
+                      "spark_version": "13.3.x-scala2.12",
+                      "node_type_id": "Standard_DS3_v2",
+                      "num_workers": 1
+                  }
+              }
+              
+              # Lancer l'exécution
+              response = runs_api.submit_run(**run_params)
+              run_id = response['run_id']
+              
+              print(f"✅ Exécution lancée - Run ID: {run_id}")
+              print(f"🔗 Lien: {host}/#job/0/run/{run_id}")
+              
+              # Attendre la fin
+              print("⏳ Attente de la fin de l'exécution...")
+              
+              while True:
+                  run_info = runs_api.get_run(run_id)
+                  state = run_info['state']['life_cycle_state']
+                  
+                  if state in ['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR']:
+                      result_state = run_info['state'].get('result_state', 'UNKNOWN')
+                      
+                      if result_state == 'SUCCESS':
+                          print(f"✅ {notebook_path} exécuté avec succès")
+                          return True
+                      else:
+                          print(f"❌ {notebook_path} échoué: {result_state}")
+                          if 'state_message' in run_info['state']:
+                              print(f"Message: {run_info['state']['state_message']}")
+                          return False
+                  
+                  time.sleep(15)
+                  
+          except Exception as e:
+              print(f"❌ Erreur lors de l'exécution de {notebook_path}: {str(e)}")
+              return False
+      
+      # Exécuter tous les notebooks
+      print("=" * 80)
+      print("🎯 EXÉCUTION DES NOTEBOOKS")
+      print("=" * 80)
+      
+      all_success = True
+      for notebook in notebooks:
+          success = run_notebook(notebook)
+          if not success:
+              all_success = False
+              print(f"\n⚠️ Arrêt suite à l'échec de {notebook}")
+              break
+      
+      print("\n" + "=" * 80)
+      if all_success:
+          print("✅ TOUS LES NOTEBOOKS ONT ÉTÉ EXÉCUTÉS AVEC SUCCÈS")
+          print("=" * 80)
+          sys.exit(0)
+      else:
+          print("❌ ÉCHEC DE L'EXÉCUTION DES NOTEBOOKS")
+          print("=" * 80)
+          sys.exit(1)
+      PYTHON_SCRIPT
+      
+      python execute_notebooks.py
+      
+    displayName: 'Exécuter notebooks'
+    env:
+      DATABRICKS_HOST: $(DATABRICKS_HOST)
+      DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+      DATABRICKS_WORKSPACE_PATH: $(DATABRICKS_WORKSPACE_PATH)
+    condition: eq(variables['HAS_CHANGES'], 'true')
