@@ -2,20 +2,26 @@ trigger:
   branches:
     include:
       - main
+  paths:
+    include:
+      - notebooks/**  # Déclenche uniquement si des fichiers dans notebooks/ changent
 
 pool:
   vmImage: 'ubuntu-latest'
 
 variables:
-  - group: variable group  # ton groupe de variables Azure DevOps
+  - group: variable group
+  - name: DATABRICKS_HOST
+    value: 'https://adb-1119135389290183.3.azuredatabricks.net'
 
 steps:
   # Installer Python
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '3.10'
+    displayName: 'Installer Python 3.10'
   
-  # Installer requirements
+  # Installer dépendances
   - script: |
       pip install -r requirements.txt
       pip install databricks-cli
@@ -23,23 +29,76 @@ steps:
   
   # Configuration Databricks CLI
   - script: |
-      databricks configure --token <<EOF
-      $(DATABRICKS_HOST)
-      $(DATABRICKS_TOKEN)
+      echo "Configuration de Databricks CLI..."
+      echo "$(DATABRICKS_HOST)" > ~/.databrickscfg_host
+      echo "$(DATABRICKS_TOKEN)" > ~/.databrickscfg_token
+      
+      cat > ~/.databrickscfg <<EOF
+      [DEFAULT]
+      host = $(DATABRICKS_HOST)
+      token = $(DATABRICKS_TOKEN)
       EOF
-      echo "🔐 CLI Databricks configurée"
+      
+      echo "✅ CLI Databricks configurée"
     displayName: 'Configurer Databricks CLI'
-    env:
-      DATABRICKS_HOST: https://adb-1119135389290183.3.azuredatabricks.net
+  
+  # Vérifier les fichiers modifiés
+  - script: |
+      echo "📂 Fichiers modifiés dans ce commit:"
+      git diff --name-only HEAD~1 HEAD | grep "^notebooks/" || echo "Aucun notebook modifié"
+    displayName: 'Afficher fichiers modifiés'
   
   # Déployer les notebooks dans Databricks
   - script: |
+      echo "📤 Déploiement des notebooks..."
       databricks workspace import_dir notebooks /Workspace/Users/mohamedazrou2003@gmail.com --overwrite
-      echo "📥 Notebooks importés dans Databricks"
+      
+      if [ $? -eq 0 ]; then
+        echo "✅ Notebooks importés avec succès dans Databricks"
+      else
+        echo "❌ Erreur lors de l'import des notebooks"
+        exit 1
+      fi
     displayName: 'Déployer notebooks Databricks'
+  
+  # Lister les notebooks déployés
+  - script: |
+      echo "📋 Notebooks déployés:"
+      databricks workspace ls /Workspace/Users/mohamedazrou2003@gmail.com
+    displayName: 'Vérifier notebooks déployés'
   
   # Exécuter le job Databricks
   - script: |
-      databricks jobs run-now --job-id 89
-      echo "🚀 Job Databricks exécuté"
-    displayName: 'Lancer job Databricks'
+      echo "🚀 Lancement du job Databricks (ID: 89)..."
+      RUN_ID=$(databricks jobs run-now --job-id 89 | jq -r '.run_id')
+      
+      if [ -z "$RUN_ID" ]; then
+        echo "❌ Erreur: Impossible de lancer le job"
+        exit 1
+      fi
+      
+      echo "✅ Job lancé avec Run ID: $RUN_ID"
+      echo "🔗 Suivi: $(DATABRICKS_HOST)/#job/89/run/$RUN_ID"
+      
+      # Optionnel: Attendre la fin du job
+      echo "⏳ Attente de la fin du job..."
+      while true; do
+        STATE=$(databricks runs get --run-id $RUN_ID | jq -r '.state.life_cycle_state')
+        echo "État actuel: $STATE"
+        
+        if [ "$STATE" = "TERMINATED" ] || [ "$STATE" = "SKIPPED" ] || [ "$STATE" = "INTERNAL_ERROR" ]; then
+          RESULT=$(databricks runs get --run-id $RUN_ID | jq -r '.state.result_state')
+          echo "Résultat final: $RESULT"
+          
+          if [ "$RESULT" = "SUCCESS" ]; then
+            echo "✅ Job terminé avec succès"
+            exit 0
+          else
+            echo "❌ Job échoué avec état: $RESULT"
+            exit 1
+          fi
+        fi
+        
+        sleep 30
+      done
+    displayName: 'Exécuter job Databricks'
