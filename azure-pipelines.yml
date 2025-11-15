@@ -16,12 +16,10 @@ variables:
   - name: DATABRICKS_WORKSPACE_PATH
     value: '/Workspace/Users/mohamedazrou2003@gmail.com'
   - name: DATABRICKS_JOB_ID
-    value: '89'   # Ton job Databricks
+    value: '811728064107146'  # ID de ton job Databricks
 
 steps:
-  ###############################################################
-  # DEBUG REPO
-  ###############################################################
+  # DEBUG: Vérifier le contenu du repository
   - script: |
       echo "📂 STRUCTURE DU REPOSITORY:"
       ls -R
@@ -30,101 +28,55 @@ steps:
       ls -la notebooks/ || echo "❌ Le dossier notebooks n'existe pas!"
     displayName: '🔍 DEBUG - Structure du repo'
   
-  - script: |
-      echo "🔍 COMMITS RÉCENTS:"
-      git log --oneline -5
-      echo ""
-      echo "📝 FICHIERS MODIFIÉS:"
-      git diff --name-only HEAD~1 HEAD || git ls-files
-      echo ""
-      echo "🎯 NOTEBOOKS MODIFIÉS:"
-      git diff --name-only HEAD~1 HEAD | grep "^notebooks/" || echo "Aucun notebook modifié"
-    displayName: '🔍 DEBUG - Changements détectés'
-
-  ###############################################################
-  # PYTHON + DATABRICKS CLI
-  ###############################################################
+  # Installer Python
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '3.10'
     displayName: 'Installer Python 3.10'
-
+  
+  # Installer dépendances
   - script: |
-      pip install -r requirements.txt || true
+      pip install -r requirements.txt
       pip install databricks-cli
     displayName: 'Installer dépendances'
-
-  ###############################################################
-  # CONFIGURATION DATABRICKS CLI (VERSION STABLE)
-  ###############################################################
+  
+  # Configurer Databricks CLI
   - script: |
-      echo "🔧 Création du fichier ~/.databrickscfg"
-      mkdir -p ~/.databricks
       cat > ~/.databrickscfg <<EOF
       [DEFAULT]
       host = $(DATABRICKS_HOST)
-      token = $(databricksToken)
+      token = $(DATABRICKS_TOKEN)
       EOF
 
-      echo "📄 Contenu du fichier de config:"
-      cat ~/.databrickscfg
-
-      echo "🔌 Test de connexion :"
-      databricks workspace ls /
+      echo "✅ CLI Databricks configurée"
+      
+      # Tester la connexion
+      echo "🔌 TEST DE CONNEXION:"
+      databricks workspace ls /Workspace/Users || echo "❌ Connexion échouée"
     displayName: 'Configurer Databricks CLI'
-
-  ###############################################################
-  # DEPLOIEMENT DES NOTEBOOKS
-  ###############################################################
+  
+  # Déployer TOUS les notebooks
   - script: |
-      echo "📤 DEPLOIEMENT DES NOTEBOOKS"
-      echo "Source: $(Build.SourcesDirectory)/notebooks"
-      echo "Destination: $(DATABRICKS_WORKSPACE_PATH)"
-      echo ""
-
+      echo "📤 DÉPLOIEMENT DE TOUS LES NOTEBOOKS"
       if [ ! -d "notebooks" ]; then
         echo "❌ ERREUR: Le dossier 'notebooks' n'existe pas!"
         exit 1
       fi
-
-      echo "📝 Fichiers à déployer :"
-      find notebooks -type f
-
       databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
-
-      if [ $? -eq 0 ]; then
-        echo "✅ Déploiement réussi!"
-        databricks workspace ls -l $(DATABRICKS_WORKSPACE_PATH)
-      else
-        echo "❌ Échec du déploiement"
-        exit 1
-      fi
+      echo "✅ Déploiement terminé"
     displayName: 'Déployer notebooks vers Databricks'
 
-  ###############################################################
-  # EXECUTION D’UN JOB DATABRICKS
-  ###############################################################
-  - script: sudo apt-get install -y jq
-    displayName: 'Installer jq'
-
+  # Exécuter le job Databricks
   - script: |
-      echo "🚀 Exécution du job Databricks ID=$(DATABRICKS_JOB_ID)"
-
-      RESPONSE=$(databricks jobs run-now --job-id $(DATABRICKS_JOB_ID))
-      echo "Réponse API:"
-      echo "$RESPONSE"
-
-      run_id=$(echo "$RESPONSE" | jq -r '.run_id')
-
-      if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
-        echo "❌ ERREUR: Impossible de récupérer run_id !"
+      sudo apt-get update && sudo apt-get install -y jq
+      echo "🚀 Lancement du Job Databricks ID=$(DATABRICKS_JOB_ID)"
+      run_id=$(databricks jobs run-now --job-id $(DATABRICKS_JOB_ID) | jq -r '.run_id')
+      if [ -z "$run_id" ]; then
+        echo "❌ ERREUR: Aucun run_id retourné!"
         exit 1
       fi
-
       echo "▶️ Run ID lancé : $run_id"
       echo "⏳ En attente de la fin du job..."
-
       databricks runs wait --run-id $run_id
-
       echo "✅ Job Databricks terminé avec succès!"
     displayName: '🚀 Exécuter job Databricks après déploiement'
