@@ -15,6 +15,8 @@ variables:
     value: 'https://adb-1119135389290183.3.azuredatabricks.net'
   - name: DATABRICKS_WORKSPACE_PATH
     value: '/Workspace/Users/mohamedazrou2003@gmail.com'
+  - name: DATABRICKS_JOB_ID
+    value: '89'   # 👉 Mets l’ID réel de ton job Databricks
 
 steps:
   # DEBUG: Vérifier le contenu du repository
@@ -74,24 +76,19 @@ steps:
       echo "Destination: $(DATABRICKS_WORKSPACE_PATH)"
       echo ""
       
-      # Vérifier que le dossier existe
       if [ ! -d "notebooks" ]; then
         echo "❌ ERREUR: Le dossier 'notebooks' n'existe pas!"
         exit 1
       fi
       
-      # Lister les fichiers à déployer
       echo "📝 Fichiers à déployer:"
       find notebooks -type f
       echo ""
       
-      # Déployer
       databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
       
       if [ $? -eq 0 ]; then
-        echo ""
         echo "✅ Déploiement réussi!"
-        echo ""
         echo "📋 NOTEBOOKS DANS DATABRICKS:"
         databricks workspace ls -l $(DATABRICKS_WORKSPACE_PATH)
       else
@@ -99,13 +96,12 @@ steps:
         exit 1
       fi
     displayName: 'Déployer notebooks vers Databricks'
-  
-  # Comparer les contenus (CRUCIAL!)
+
+  # Comparer les contenus
   - script: |
       echo "🔄 COMPARAISON DES CONTENUS"
       echo ""
       
-      # Pour chaque notebook local
       for notebook in notebooks/*.py notebooks/*.ipynb; do
         if [ -f "$notebook" ]; then
           filename=$(basename "$notebook")
@@ -113,7 +109,6 @@ steps:
           echo "Taille: $(wc -l < "$notebook") lignes"
           echo "Hash MD5: $(md5sum "$notebook" | cut -d' ' -f1)"
           
-          # Télécharger depuis Databricks pour comparaison
           echo "📥 Téléchargement depuis Databricks..."
           databricks workspace export $(DATABRICKS_WORKSPACE_PATH)/$filename /tmp/$filename --format SOURCE 2>/dev/null
           
@@ -123,8 +118,7 @@ steps:
             if diff "$notebook" "/tmp/$filename" > /dev/null; then
               echo "✅ Les fichiers sont identiques"
             else
-              echo "⚠️ LES FICHIERS SONT DIFFÉRENTS!"
-              echo "Différences:"
+              echo "⚠️ LES FICHIERS SONT DIFFERENTS!"
               diff "$notebook" "/tmp/$filename" | head -20
             fi
           else
@@ -135,3 +129,27 @@ steps:
         fi
       done
     displayName: '🔍 Vérifier synchronisation'
+
+  ###########################################################
+  # 🚀 EXÉCUTER LE JOB DATABRICKS APRÈS DÉPLOIEMENT
+  ###########################################################
+  - script: sudo apt-get install -y jq
+    displayName: 'Installer jq (parser JSON)'
+
+  - script: |
+      echo "🚀 Lancement du Job Databricks ID=$(DATABRICKS_JOB_ID)"
+      
+      run_id=$(databricks jobs run-now --job-id $(DATABRICKS_JOB_ID) | jq -r '.run_id')
+      
+      if [ -z "$run_id" ]; then
+        echo "❌ ERREUR: Aucun run_id retourné!"
+        exit 1
+      fi
+      
+      echo "▶️ Run ID lancé : $run_id"
+      echo "⏳ En attente de la fin du job..."
+      
+      databricks runs wait --run-id $run_id
+      
+      echo "✅ Job Databricks terminé avec succès!"
+    displayName: '🚀 Exécuter job Databricks après déploiement'
