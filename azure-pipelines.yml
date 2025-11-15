@@ -16,116 +16,177 @@ variables:
   - name: DATABRICKS_WORKSPACE_PATH
     value: '/Workspace/Users/mohamedazrou2003@gmail.com'
   - name: DATABRICKS_JOB_ID
-    value: '811728064107146' # ID réel de ton job Databricks
+    value: '811728064107146'
 
 steps:
-# 1️⃣ DEBUG: vérifier le repo et les notebooks
+# 1️⃣ DEBUG : Structure repo
 - script: |
-    echo "📂 STRUCTURE DU REPOSITORY:"
+    echo "📂 STRUCTURE DU REPO :"
     ls -R
-    echo ""
-    echo "📁 Contenu du dossier notebooks:"
-    ls -la notebooks/ || echo "❌ Le dossier notebooks n'existe pas!"
-  displayName: '🔍 DEBUG - Structure du repo'
+    echo "📁 Fichiers dans notebooks/"
+    ls -la notebooks/ || echo "❌ Le dossier notebooks n'existe pas"
+  displayName: "🔍 DEBUG - Structure du repo"
 
+# 2️⃣ DEBUG : Fichiers modifiés
 - script: |
-    echo "🔍 COMMITS RÉCENTS:"
-    git log --oneline -5
-    echo ""
-    echo "📝 FICHIERS MODIFIÉS DANS LE DERNIER COMMIT:"
-    git diff --name-only HEAD~1 HEAD || git ls-files
-    echo ""
-    echo "🎯 FICHIERS NOTEBOOKS MODIFIÉS:"
-    git diff --name-only HEAD~1 HEAD | grep "^notebooks/" || echo "Aucun notebook modifié"
-  displayName: '🔍 DEBUG - Changements détectés'
+    echo "🔍 COMMITS RÉCENTS"
+    git log --oneline -5 || echo "Pas d'historique git"
+    echo "📝 FICHIERS MODIFIÉS"
+    git diff --name-only HEAD~1 HEAD 2>/dev/null || git ls-files
+    echo "🎯 NOTEBOOKS MODIFIÉS"
+    git diff --name-only HEAD~1 HEAD 2>/dev/null | grep "^notebooks/" || echo "Aucun notebook modifié"
+  displayName: "🔍 DEBUG - Changements détectés"
 
-# 2️⃣ Installer Python
+# 3️⃣ Installer Python
 - task: UsePythonVersion@0
   inputs:
     versionSpec: '3.10'
-  displayName: 'Installer Python 3.10'
+  displayName: "Installer Python 3.10"
 
-# 3️⃣ Installer dépendances
+# 4️⃣ Installer dépendances
 - script: |
-    pip install -r requirements.txt
     pip install databricks-cli
-  displayName: 'Installer dépendances'
+    if [ -f "requirements.txt" ]; then
+      pip install -r requirements.txt
+    else
+      echo "ℹ️ Aucun requirements.txt trouvé"
+    fi
+  displayName: "Installer dépendances"
 
-# 4️⃣ Configurer Databricks CLI
+# 5️⃣ Configurer Databricks CLI
 - script: |
+    mkdir -p ~/.databricks
     cat > ~/.databrickscfg <<EOF
     [DEFAULT]
     host = $(DATABRICKS_HOST)
     token = $(DATABRICKS_TOKEN)
     EOF
-
-    echo "✅ CLI Databricks configurée"
-    echo "🔌 Test de connexion au workspace :"
-    databricks workspace ls /Workspace/Users || echo "❌ Connexion échouée"
+    echo "🔌 Test CLI Databricks"
     databricks --version
-  displayName: 'Configurer Databricks CLI'
+    databricks workspace ls / || echo "⚠️ Erreur de connexion Databricks"
+  displayName: "Configurer Databricks CLI"
 
-# 5️⃣ Déployer tous les notebooks
+# 6️⃣ Déployer tous les notebooks vers Databricks
 - script: |
-    echo "📤 Déploiement des notebooks..."
+    echo "📤 Déploiement des notebooks vers Databricks..."
+    
     if [ ! -d "notebooks" ]; then
-      echo "❌ ERREUR: Le dossier 'notebooks' n'existe pas!"
+      echo "❌ ERREUR : Le dossier notebooks n'existe pas"
       exit 1
     fi
-
+    
+    # Vérifier qu'il y a des fichiers dans notebooks/
+    if [ -z "$(ls -A notebooks/)" ]; then
+      echo "⚠️ ATTENTION : Le dossier notebooks est vide"
+      exit 1
+    fi
+    
+    echo "📂 Création du répertoire workspace si nécessaire..."
+    databricks workspace mkdirs $(DATABRICKS_WORKSPACE_PATH) || echo "Répertoire déjà existant"
+    
+    echo "📤 Import des notebooks..."
     databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
-
+    
     if [ $? -eq 0 ]; then
-      echo "✅ Déploiement réussi!"
+      echo "✅ Déploiement réussi !"
+      echo "📋 Contenu du workspace :"
       databricks workspace ls -l $(DATABRICKS_WORKSPACE_PATH)
     else
-      echo "❌ Échec du déploiement"
+      echo "❌ ERREUR lors du déploiement"
       exit 1
     fi
-  displayName: 'Déployer notebooks vers Databricks'
+  displayName: "Déployer notebooks vers Databricks"
 
-# 6️⃣ Comparer les notebooks
+# 7️⃣ Vérifier synchro notebooks
 - script: |
     echo "🔄 Comparaison des notebooks..."
+    
     for notebook in notebooks/*.py notebooks/*.ipynb; do
-      if [ -f "$notebook" ]; then
-        filename=$(basename "$notebook")
-        echo "📄 Notebook local: $filename"
-        echo "Hash MD5 local: $(md5sum "$notebook" | cut -d' ' -f1)"
-
-        databricks workspace export $(DATABRICKS_WORKSPACE_PATH)/$filename /tmp/$filename --format SOURCE 2>/dev/null
-        if [ -f "/tmp/$filename" ]; then
-          echo "Hash MD5 Databricks: $(md5sum /tmp/$filename | cut -d' ' -f1)"
-          if diff "$notebook" "/tmp/$filename" > /dev/null; then
-            echo "✅ Identique"
-          else
-            echo "⚠️ Différences détectées"
-            diff "$notebook" "/tmp/$filename" | head -20
-          fi
+      # Vérifier si le fichier existe (éviter l'erreur si aucun fichier ne correspond)
+      if [ ! -f "$notebook" ]; then
+        continue
+      fi
+      
+      filename=$(basename "$notebook")
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo "📄 Notebook local : $filename"
+      echo "Hash local : $(md5sum "$notebook" | cut -d' ' -f1)"
+      
+      # Exporter depuis Databricks
+      databricks workspace export "$(DATABRICKS_WORKSPACE_PATH)/$filename" "/tmp/$filename" --format SOURCE 2>/dev/null
+      
+      if [ -f "/tmp/$filename" ]; then
+        echo "Hash Databricks : $(md5sum /tmp/$filename | cut -d' ' -f1)"
+        
+        if diff -q "$notebook" "/tmp/$filename" > /dev/null 2>&1; then
+          echo "✔️ Identique"
         else
-          echo "⚠️ Impossible de télécharger depuis Databricks"
+          echo "⚠️ Différences détectées"
+          echo "Détails des différences :"
+          diff "$notebook" "/tmp/$filename" | head -20
         fi
-        echo "---"
+        rm -f "/tmp/$filename"
+      else
+        echo "⚠️ Impossible d'exporter depuis Databricks"
       fi
     done
-  displayName: '🔍 Vérifier synchronisation'
+  displayName: "🔍 Vérifier synchronisation notebooks"
+  continueOnError: true
 
-# 7️⃣ Installer jq pour parser JSON
+# 8️⃣ Installer jq
 - script: |
-    sudo apt-get update
+    sudo apt-get update -qq
     sudo apt-get install -y jq
-  displayName: 'Installer jq (parser JSON)'
+    jq --version
+  displayName: "Installer jq"
 
-# 8️⃣ Exécuter le job Databricks et attendre sa fin
+# 9️⃣ Exécuter le job Databricks
 - script: |
-    echo "🚀 Exécution du job Databricks ID=$(DATABRICKS_JOB_ID)"
-    run_id=$(databricks jobs run-now --job-id $(DATABRICKS_JOB_ID) | jq -r '.run_id')
-    if [ -z "$run_id" ]; then
-      echo "❌ ERREUR: Impossible de récupérer run_id !"
+    echo "🚀 Exécution du job Databricks : $(DATABRICKS_JOB_ID)"
+    
+    # Lancer le job
+    response=$(databricks jobs run-now --job-id $(DATABRICKS_JOB_ID) 2>&1)
+    
+    echo "📨 Réponse du lancement :"
+    echo "$response"
+    
+    # Extraire le run_id
+    run_id=$(echo "$response" | jq -r '.run_id // empty' 2>/dev/null)
+    
+    if [ -z "$run_id" ] || [ "$run_id" == "null" ]; then
+      echo "❌ ERREUR : Impossible de récupérer le run_id"
+      echo "Réponse brute : $response"
       exit 1
     fi
+    
     echo "▶️ Run ID : $run_id"
-    echo "⏳ En attente de la fin du job..."
-    databricks runs wait --run-id $run_id
-    echo "✅ Job Databricks terminé avec succès!"
-  displayName: '🚀 Exécuter job Databricks après déploiement'
+    echo "🔗 Lien : $(DATABRICKS_HOST)/#job/$(DATABRICKS_JOB_ID)/run/$run_id"
+    
+    echo "⏳ Attente de la fin du job..."
+    
+    # Attendre la fin du job avec timeout
+    timeout 1800 databricks runs wait --run-id $run_id
+    wait_exit_code=$?
+    
+    if [ $wait_exit_code -eq 0 ]; then
+      echo "✅ Job terminé avec succès !"
+      
+      # Récupérer le statut final
+      run_status=$(databricks runs get --run-id $run_id | jq -r '.state.life_cycle_state')
+      result_state=$(databricks runs get --run-id $run_id | jq -r '.state.result_state')
+      
+      echo "📊 État final : $run_status"
+      echo "📊 Résultat : $result_state"
+      
+      if [ "$result_state" != "SUCCESS" ]; then
+        echo "❌ Le job s'est terminé avec des erreurs : $result_state"
+        exit 1
+      fi
+    elif [ $wait_exit_code -eq 124 ]; then
+      echo "⏱️ TIMEOUT : Le job a dépassé 30 minutes"
+      exit 1
+    else
+      echo "❌ Erreur lors de l'attente du job"
+      exit 1
+    fi
+  displayName: "🚀 Exécuter job Databricks"
