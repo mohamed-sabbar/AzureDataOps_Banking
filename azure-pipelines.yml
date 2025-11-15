@@ -17,27 +17,6 @@ variables:
     value: '/Workspace/Users/mohamedazrou2003@gmail.com'
 
 steps:
-  # DEBUG: Vérifier le contenu du repository
-  - script: |
-      echo "📂 STRUCTURE DU REPOSITORY:"
-      ls -R
-      echo ""
-      echo "📁 Contenu du dossier notebooks:"
-      ls -la notebooks/ || echo "❌ Le dossier notebooks n'existe pas!"
-    displayName: '🔍 DEBUG - Structure du repo'
-  
-  # DEBUG: Vérifier les changements
-  - script: |
-      echo "🔍 COMMITS RÉCENTS:"
-      git log --oneline -5
-      echo ""
-      echo "📝 FICHIERS MODIFIÉS DANS LE DERNIER COMMIT:"
-      git diff --name-only HEAD~1 HEAD || git ls-files
-      echo ""
-      echo "🎯 FICHIERS NOTEBOOKS MODIFIÉS:"
-      git diff --name-only HEAD~1 HEAD | grep "^notebooks/" || echo "Aucun notebook modifié"
-    displayName: '🔍 DEBUG - Changements détectés'
-  
   # Installer Python
   - task: UsePythonVersion@0
     inputs:
@@ -60,78 +39,222 @@ steps:
       
       databricks jobs configure --version=2.1
       echo "✅ CLI Databricks configurée"
-      
-      # Tester la connexion
-      echo ""
-      echo "🔌 TEST DE CONNEXION:"
-      databricks workspace ls /Workspace/Users || echo "❌ Connexion échouée"
     displayName: 'Configurer Databricks CLI'
   
-  # Déployer TOUS les notebooks (sans condition)
+  # Détecter les notebooks modifiés
   - script: |
-      echo "📤 DÉPLOIEMENT DE TOUS LES NOTEBOOKS"
-      echo "Source: $(Build.SourcesDirectory)/notebooks"
-      echo "Destination: $(DATABRICKS_WORKSPACE_PATH)"
+      echo "🔍 DÉTECTION DES NOTEBOOKS MODIFIÉS"
+      echo "=================================="
       echo ""
       
-      # Vérifier que le dossier existe
-      if [ ! -d "notebooks" ]; then
-        echo "❌ ERREUR: Le dossier 'notebooks' n'existe pas!"
-        exit 1
+      # Obtenir les fichiers modifiés
+      CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | grep "^notebooks/.*\.(py|ipynb)$" || true)
+      
+      if [ -z "$CHANGED_FILES" ]; then
+        echo "⚠️ Aucun notebook modifié dans ce commit"
+        echo "##vso[task.setvariable variable=HAS_CHANGES]false"
+        echo "##vso[task.setvariable variable=CHANGED_NOTEBOOKS]"
+        exit 0
       fi
       
-      # Lister les fichiers à déployer
-      echo "📝 Fichiers à déployer:"
-      find notebooks -type f
+      echo "📝 Notebooks modifiés détectés:"
+      echo "$CHANGED_FILES"
       echo ""
       
-      # Déployer
-      databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
+      # Sauvegarder la liste des notebooks modifiés
+      echo "$CHANGED_FILES" > /tmp/changed_notebooks.txt
       
-      if [ $? -eq 0 ]; then
-        echo ""
-        echo "✅ Déploiement réussi!"
-        echo ""
-        echo "📋 NOTEBOOKS DANS DATABRICKS:"
-        databricks workspace ls -l $(DATABRICKS_WORKSPACE_PATH)
-      else
-        echo "❌ Échec du déploiement"
-        exit 1
-      fi
-    displayName: 'Déployer notebooks vers Databricks'
+      # Créer une variable pour les scripts suivants
+      echo "##vso[task.setvariable variable=HAS_CHANGES]true"
+      
+      # Compter le nombre de notebooks
+      COUNT=$(echo "$CHANGED_FILES" | wc -l)
+      echo "📊 Nombre de notebooks à déployer: $COUNT"
+      
+    displayName: '🔍 Détecter notebooks modifiés'
   
-  # Comparer les contenus (CRUCIAL!)
+  # Déployer UNIQUEMENT les notebooks modifiés
   - script: |
-      echo "🔄 COMPARAISON DES CONTENUS"
+      if [ "$(HAS_CHANGES)" = "false" ]; then
+        echo "⏭️ Aucun changement, skip du déploiement"
+        exit 0
+      fi
+      
+      echo "📤 DÉPLOIEMENT DES NOTEBOOKS MODIFIÉS"
+      echo "====================================="
       echo ""
       
-      # Pour chaque notebook local
-      for notebook in notebooks/*.py notebooks/*.ipynb; do
-        if [ -f "$notebook" ]; then
-          filename=$(basename "$notebook")
-          echo "📄 Fichier local: $filename"
-          echo "Taille: $(wc -l < "$notebook") lignes"
-          echo "Hash MD5: $(md5sum "$notebook" | cut -d' ' -f1)"
+      # Lire la liste des notebooks modifiés
+      while IFS= read -r notebook_path; do
+        if [ -f "$notebook_path" ]; then
+          filename=$(basename "$notebook_path")
+          echo "📦 Déploiement de: $filename"
           
-          # Télécharger depuis Databricks pour comparaison
-          echo "📥 Téléchargement depuis Databricks..."
-          databricks workspace export $(DATABRICKS_WORKSPACE_PATH)/$filename /tmp/$filename --format SOURCE 2>/dev/null
-          
-          if [ -f "/tmp/$filename" ]; then
-            echo "Hash MD5 Databricks: $(md5sum /tmp/$filename | cut -d' ' -f1)"
-            
-            if diff "$notebook" "/tmp/$filename" > /dev/null; then
-              echo "✅ Les fichiers sont identiques"
-            else
-              echo "⚠️ LES FICHIERS SONT DIFFÉRENTS!"
-              echo "Différences:"
-              diff "$notebook" "/tmp/$filename" | head -20
-            fi
+          # Déterminer le format
+          if [[ "$notebook_path" == *.ipynb ]]; then
+            FORMAT="JUPYTER"
           else
-            echo "⚠️ Impossible de télécharger depuis Databricks"
+            FORMAT="SOURCE"
           fi
           
-          echo "---"
+          # Déployer le notebook
+          databricks workspace import "$notebook_path" \
+            "$(DATABRICKS_WORKSPACE_PATH)/$filename" \
+            --language PYTHON \
+            --format $FORMAT \
+            --overwrite
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ $filename déployé avec succès"
+          else
+            echo "❌ Erreur lors du déploiement de $filename"
+            exit 1
+          fi
+          echo ""
         fi
-      done
-    displayName: '🔍 Vérifier synchronisation'
+      done < /tmp/changed_notebooks.txt
+      
+      echo "✅ TOUS LES NOTEBOOKS MODIFIÉS ONT ÉTÉ DÉPLOYÉS"
+      
+    displayName: '📤 Déployer notebooks modifiés'
+    condition: eq(variables['HAS_CHANGES'], 'true')
+  
+  # Exécuter UNIQUEMENT les notebooks modifiés
+  - script: |
+      if [ "$(HAS_CHANGES)" = "false" ]; then
+        echo "⏭️ Aucun changement, skip de l'exécution"
+        exit 0
+      fi
+      
+      cat > execute_changed_notebooks.py <<'PYTHON_SCRIPT'
+      import os
+      import sys
+      import time
+      from pathlib import Path
+      from databricks_cli.sdk.api_client import ApiClient
+      from databricks_cli.runs.api import RunsApi
+      
+      # Configuration
+      host = os.environ['DATABRICKS_HOST']
+      token = os.environ['DATABRICKS_TOKEN']
+      workspace_path = os.environ['DATABRICKS_WORKSPACE_PATH']
+      
+      # Créer le client API
+      api_client = ApiClient(host=host, token=token)
+      runs_api = RunsApi(api_client)
+      
+      # Lire la liste des notebooks modifiés
+      with open('/tmp/changed_notebooks.txt', 'r') as f:
+          changed_files = [line.strip() for line in f if line.strip()]
+      
+      # Extraire uniquement les noms de fichiers
+      notebooks = [Path(f).name for f in changed_files]
+      
+      print("=" * 80)
+      print("🚀 EXÉCUTION DES NOTEBOOKS MODIFIÉS")
+      print("=" * 80)
+      print(f"\n📝 Notebooks à exécuter: {notebooks}\n")
+      
+      def run_notebook(notebook_name):
+          """Exécute un notebook et attend la fin"""
+          print(f"\n{'='*60}")
+          print(f"🚀 Exécution de: {notebook_name}")
+          print('='*60)
+          
+          try:
+              # Paramètres d'exécution
+              run_params = {
+                  "notebook_task": {
+                      "notebook_path": f"{workspace_path}/{notebook_name}",
+                      "base_parameters": {}
+                  },
+                  "new_cluster": {
+                      "spark_version": "13.3.x-scala2.12",
+                      "node_type_id": "Standard_DS3_v2",
+                      "num_workers": 1
+                  }
+              }
+              
+              # Lancer l'exécution
+              response = runs_api.submit_run(**run_params)
+              run_id = response['run_id']
+              
+              print(f"✅ Exécution lancée")
+              print(f"📊 Run ID: {run_id}")
+              print(f"🔗 Lien: {host}/#job/0/run/{run_id}")
+              print(f"\n⏳ Attente de la fin de l'exécution...")
+              
+              # Attendre la fin
+              start_time = time.time()
+              while True:
+                  run_info = runs_api.get_run(run_id)
+                  state = run_info['state']['life_cycle_state']
+                  elapsed = int(time.time() - start_time)
+                  
+                  print(f"⏱️  État: {state} (temps écoulé: {elapsed}s)")
+                  
+                  if state in ['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR']:
+                      result_state = run_info['state'].get('result_state', 'UNKNOWN')
+                      
+                      print(f"\n{'='*60}")
+                      if result_state == 'SUCCESS':
+                          print(f"✅ {notebook_name} exécuté avec SUCCÈS")
+                          print(f"⏱️  Durée totale: {elapsed}s")
+                          print('='*60)
+                          return True
+                      else:
+                          print(f"❌ {notebook_name} a ÉCHOUÉ: {result_state}")
+                          if 'state_message' in run_info['state']:
+                              print(f"💬 Message: {run_info['state']['state_message']}")
+                          print('='*60)
+                          return False
+                  
+                  time.sleep(15)
+                  
+          except Exception as e:
+              print(f"\n❌ ERREUR lors de l'exécution de {notebook_name}:")
+              print(f"   {str(e)}")
+              return False
+      
+      # Exécuter tous les notebooks modifiés
+      all_success = True
+      results = []
+      
+      for i, notebook in enumerate(notebooks, 1):
+          print(f"\n\n📍 Notebook {i}/{len(notebooks)}")
+          success = run_notebook(notebook)
+          results.append((notebook, success))
+          
+          if not success:
+              all_success = False
+              print(f"\n⚠️  Arrêt de l'exécution suite à l'échec de {notebook}")
+              break
+      
+      # Résumé final
+      print("\n\n" + "=" * 80)
+      print("📊 RÉSUMÉ DE L'EXÉCUTION")
+      print("=" * 80)
+      
+      for notebook, success in results:
+          status = "✅ SUCCÈS" if success else "❌ ÉCHEC"
+          print(f"  {status}  {notebook}")
+      
+      print("\n" + "=" * 80)
+      if all_success:
+          print("🎉 TOUS LES NOTEBOOKS ONT ÉTÉ EXÉCUTÉS AVEC SUCCÈS")
+          print("=" * 80)
+          sys.exit(0)
+      else:
+          print("❌ CERTAINS NOTEBOOKS ONT ÉCHOUÉ")
+          print("=" * 80)
+          sys.exit(1)
+      PYTHON_SCRIPT
+      
+      python execute_changed_notebooks.py
+      
+    displayName: '🚀 Exécuter notebooks modifiés'
+    env:
+      DATABRICKS_HOST: $(DATABRICKS_HOST)
+      DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+      DATABRICKS_WORKSPACE_PATH: $(DATABRICKS_WORKSPACE_PATH)
+    condition: eq(variables['HAS_CHANGES'], 'true')
