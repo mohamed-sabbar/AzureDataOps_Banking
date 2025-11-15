@@ -16,67 +16,116 @@ variables:
   - name: DATABRICKS_WORKSPACE_PATH
     value: '/Workspace/Users/mohamedazrou2003@gmail.com'
   - name: DATABRICKS_JOB_ID
-    value: '811728064107146'  # ID de ton job Databricks
+    value: '811728064107146' # ID réel de ton job Databricks
 
 steps:
-  # DEBUG: Vérifier le contenu du repository
-  - script: |
-      echo "📂 STRUCTURE DU REPOSITORY:"
-      ls -R
-      echo ""
-      echo "📁 Contenu du dossier notebooks:"
-      ls -la notebooks/ || echo "❌ Le dossier notebooks n'existe pas!"
-    displayName: '🔍 DEBUG - Structure du repo'
-  
-  # Installer Python
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '3.10'
-    displayName: 'Installer Python 3.10'
-  
-  # Installer dépendances
-  - script: |
-      pip install -r requirements.txt
-      pip install databricks-cli
-    displayName: 'Installer dépendances'
-  
-  # Configurer Databricks CLI
-  - script: |
-      cat > ~/.databrickscfg <<EOF
-      [DEFAULT]
-      host = $(DATABRICKS_HOST)
-      token = $(DATABRICKS_TOKEN)
-      EOF
+# 1️⃣ DEBUG: vérifier le repo et les notebooks
+- script: |
+    echo "📂 STRUCTURE DU REPOSITORY:"
+    ls -R
+    echo ""
+    echo "📁 Contenu du dossier notebooks:"
+    ls -la notebooks/ || echo "❌ Le dossier notebooks n'existe pas!"
+  displayName: '🔍 DEBUG - Structure du repo'
 
-      echo "✅ CLI Databricks configurée"
-      
-      # Tester la connexion
-      echo "🔌 TEST DE CONNEXION:"
-      databricks workspace ls /Workspace/Users || echo "❌ Connexion échouée"
-    displayName: 'Configurer Databricks CLI'
-  
-  # Déployer TOUS les notebooks
-  - script: |
-      echo "📤 DÉPLOIEMENT DE TOUS LES NOTEBOOKS"
-      if [ ! -d "notebooks" ]; then
-        echo "❌ ERREUR: Le dossier 'notebooks' n'existe pas!"
-        exit 1
-      fi
-      databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
-      echo "✅ Déploiement terminé"
-    displayName: 'Déployer notebooks vers Databricks'
+- script: |
+    echo "🔍 COMMITS RÉCENTS:"
+    git log --oneline -5
+    echo ""
+    echo "📝 FICHIERS MODIFIÉS DANS LE DERNIER COMMIT:"
+    git diff --name-only HEAD~1 HEAD || git ls-files
+    echo ""
+    echo "🎯 FICHIERS NOTEBOOKS MODIFIÉS:"
+    git diff --name-only HEAD~1 HEAD | grep "^notebooks/" || echo "Aucun notebook modifié"
+  displayName: '🔍 DEBUG - Changements détectés'
 
-  # Exécuter le job Databricks
-  - script: |
-      sudo apt-get update && sudo apt-get install -y jq
-      echo "🚀 Lancement du Job Databricks ID=$(DATABRICKS_JOB_ID)"
-      run_id=$(databricks jobs run-now --job-id $(DATABRICKS_JOB_ID) | jq -r '.run_id')
-      if [ -z "$run_id" ]; then
-        echo "❌ ERREUR: Aucun run_id retourné!"
-        exit 1
+# 2️⃣ Installer Python
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '3.10'
+  displayName: 'Installer Python 3.10'
+
+# 3️⃣ Installer dépendances
+- script: |
+    pip install -r requirements.txt
+    pip install databricks-cli
+  displayName: 'Installer dépendances'
+
+# 4️⃣ Configurer Databricks CLI
+- script: |
+    cat > ~/.databrickscfg <<EOF
+    [DEFAULT]
+    host = $(DATABRICKS_HOST)
+    token = $(DATABRICKS_TOKEN)
+    EOF
+
+    echo "✅ CLI Databricks configurée"
+    echo "🔌 Test de connexion au workspace :"
+    databricks workspace ls /Workspace/Users || echo "❌ Connexion échouée"
+    databricks --version
+  displayName: 'Configurer Databricks CLI'
+
+# 5️⃣ Déployer tous les notebooks
+- script: |
+    echo "📤 Déploiement des notebooks..."
+    if [ ! -d "notebooks" ]; then
+      echo "❌ ERREUR: Le dossier 'notebooks' n'existe pas!"
+      exit 1
+    fi
+
+    databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
+
+    if [ $? -eq 0 ]; then
+      echo "✅ Déploiement réussi!"
+      databricks workspace ls -l $(DATABRICKS_WORKSPACE_PATH)
+    else
+      echo "❌ Échec du déploiement"
+      exit 1
+    fi
+  displayName: 'Déployer notebooks vers Databricks'
+
+# 6️⃣ Comparer les notebooks
+- script: |
+    echo "🔄 Comparaison des notebooks..."
+    for notebook in notebooks/*.py notebooks/*.ipynb; do
+      if [ -f "$notebook" ]; then
+        filename=$(basename "$notebook")
+        echo "📄 Notebook local: $filename"
+        echo "Hash MD5 local: $(md5sum "$notebook" | cut -d' ' -f1)"
+
+        databricks workspace export $(DATABRICKS_WORKSPACE_PATH)/$filename /tmp/$filename --format SOURCE 2>/dev/null
+        if [ -f "/tmp/$filename" ]; then
+          echo "Hash MD5 Databricks: $(md5sum /tmp/$filename | cut -d' ' -f1)"
+          if diff "$notebook" "/tmp/$filename" > /dev/null; then
+            echo "✅ Identique"
+          else
+            echo "⚠️ Différences détectées"
+            diff "$notebook" "/tmp/$filename" | head -20
+          fi
+        else
+          echo "⚠️ Impossible de télécharger depuis Databricks"
+        fi
+        echo "---"
       fi
-      echo "▶️ Run ID lancé : $run_id"
-      echo "⏳ En attente de la fin du job..."
-      databricks runs wait --run-id $run_id
-      echo "✅ Job Databricks terminé avec succès!"
-    displayName: '🚀 Exécuter job Databricks après déploiement'
+    done
+  displayName: '🔍 Vérifier synchronisation'
+
+# 7️⃣ Installer jq pour parser JSON
+- script: |
+    sudo apt-get update
+    sudo apt-get install -y jq
+  displayName: 'Installer jq (parser JSON)'
+
+# 8️⃣ Exécuter le job Databricks et attendre sa fin
+- script: |
+    echo "🚀 Exécution du job Databricks ID=$(DATABRICKS_JOB_ID)"
+    run_id=$(databricks jobs run-now --job-id $(DATABRICKS_JOB_ID) | jq -r '.run_id')
+    if [ -z "$run_id" ]; then
+      echo "❌ ERREUR: Impossible de récupérer run_id !"
+      exit 1
+    fi
+    echo "▶️ Run ID : $run_id"
+    echo "⏳ En attente de la fin du job..."
+    databricks runs wait --run-id $run_id
+    echo "✅ Job Databricks terminé avec succès!"
+  displayName: '🚀 Exécuter job Databricks après déploiement'
