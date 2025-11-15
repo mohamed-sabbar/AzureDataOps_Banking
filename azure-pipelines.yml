@@ -17,6 +17,27 @@ variables:
     value: '/Workspace/Users/mohamedazrou2003@gmail.com'
 
 steps:
+  # DEBUG: Vérifier le contenu du repository
+  - script: |
+      echo "📂 STRUCTURE DU REPOSITORY:"
+      ls -R
+      echo ""
+      echo "📁 Contenu du dossier notebooks:"
+      ls -la notebooks/ || echo "❌ Le dossier notebooks n'existe pas!"
+    displayName: '🔍 DEBUG - Structure du repo'
+  
+  # DEBUG: Vérifier les changements
+  - script: |
+      echo "🔍 COMMITS RÉCENTS:"
+      git log --oneline -5
+      echo ""
+      echo "📝 FICHIERS MODIFIÉS DANS LE DERNIER COMMIT:"
+      git diff --name-only HEAD~1 HEAD || git ls-files
+      echo ""
+      echo "🎯 FICHIERS NOTEBOOKS MODIFIÉS:"
+      git diff --name-only HEAD~1 HEAD | grep "^notebooks/" || echo "Aucun notebook modifié"
+    displayName: '🔍 DEBUG - Changements détectés'
+  
   # Installer Python
   - task: UsePythonVersion@0
     inputs:
@@ -39,155 +60,78 @@ steps:
       
       databricks jobs configure --version=2.1
       echo "✅ CLI Databricks configurée"
+      
+      # Tester la connexion
+      echo ""
+      echo "🔌 TEST DE CONNEXION:"
+      databricks workspace ls /Workspace/Users || echo "❌ Connexion échouée"
     displayName: 'Configurer Databricks CLI'
   
-  # Détecter et déployer les notebooks modifiés
+  # Déployer TOUS les notebooks (sans condition)
   - script: |
-      echo "🔍 Détection des notebooks modifiés..."
-      
-      # Obtenir les fichiers modifiés dans le dossier notebooks
-      CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | grep "^notebooks/" || true)
-      
-      if [ -z "$CHANGED_FILES" ]; then
-        echo "⚠️ Aucun notebook modifié"
-        echo "##vso[task.setvariable variable=HAS_CHANGES]false"
-        exit 0
-      fi
-      
-      echo "📝 Notebooks modifiés:"
-      echo "$CHANGED_FILES"
-      echo "##vso[task.setvariable variable=HAS_CHANGES]true"
-      
-      # Déployer tous les notebooks (pour s'assurer de la cohérence)
+      echo "📤 DÉPLOIEMENT DE TOUS LES NOTEBOOKS"
+      echo "Source: $(Build.SourcesDirectory)/notebooks"
+      echo "Destination: $(DATABRICKS_WORKSPACE_PATH)"
       echo ""
-      echo "📤 Déploiement de tous les notebooks..."
-      databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
       
-      if [ $? -eq 0 ]; then
-        echo "✅ Notebooks déployés avec succès"
-      else
-        echo "❌ Erreur lors du déploiement"
+      # Vérifier que le dossier existe
+      if [ ! -d "notebooks" ]; then
+        echo "❌ ERREUR: Le dossier 'notebooks' n'existe pas!"
         exit 1
       fi
       
-      # Lister les notebooks déployés
+      # Lister les fichiers à déployer
+      echo "📝 Fichiers à déployer:"
+      find notebooks -type f
       echo ""
-      echo "📋 Notebooks disponibles dans Databricks:"
-      databricks workspace ls $(DATABRICKS_WORKSPACE_PATH)
       
-    displayName: 'Déployer notebooks modifiés'
-  
-  # Exécuter les notebooks modifiés
-  - script: |
-      if [ "$(HAS_CHANGES)" = "false" ]; then
-        echo "⏭️ Aucun changement, skip de l'exécution"
-        exit 0
+      # Déployer
+      databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
+      
+      if [ $? -eq 0 ]; then
+        echo ""
+        echo "✅ Déploiement réussi!"
+        echo ""
+        echo "📋 NOTEBOOKS DANS DATABRICKS:"
+        databricks workspace ls -l $(DATABRICKS_WORKSPACE_PATH)
+      else
+        echo "❌ Échec du déploiement"
+        exit 1
       fi
+    displayName: 'Déployer notebooks vers Databricks'
+  
+  # Comparer les contenus (CRUCIAL!)
+  - script: |
+      echo "🔄 COMPARAISON DES CONTENUS"
+      echo ""
       
-      cat > execute_notebooks.py <<'PYTHON_SCRIPT'
-      import os
-      import sys
-      import time
-      import json
-      from databricks_cli.sdk.api_client import ApiClient
-      from databricks_cli.jobs.api import JobsApi
-      from databricks_cli.runs.api import RunsApi
-      
-      # Configuration
-      host = os.environ['DATABRICKS_HOST']
-      token = os.environ['DATABRICKS_TOKEN']
-      workspace_path = os.environ['DATABRICKS_WORKSPACE_PATH']
-      
-      # Créer le client API
-      api_client = ApiClient(host=host, token=token)
-      runs_api = RunsApi(api_client)
-      
-      # Liste des notebooks à exécuter (dans l'ordre)
-      notebooks = [
-          "notebook1.py",  # Remplace par tes vrais noms
-          "notebook2.py",
-          "notebook3.py"
-      ]
-      
-      def run_notebook(notebook_path):
-          """Exécute un notebook et attend la fin"""
-          print(f"\n🚀 Exécution du notebook: {notebook_path}")
+      # Pour chaque notebook local
+      for notebook in notebooks/*.py notebooks/*.ipynb; do
+        if [ -f "$notebook" ]; then
+          filename=$(basename "$notebook")
+          echo "📄 Fichier local: $filename"
+          echo "Taille: $(wc -l < "$notebook") lignes"
+          echo "Hash MD5: $(md5sum "$notebook" | cut -d' ' -f1)"
           
-          try:
-              # Paramètres d'exécution
-              run_params = {
-                  "notebook_task": {
-                      "notebook_path": f"{workspace_path}/{notebook_path}",
-                      "base_parameters": {}
-                  },
-                  "new_cluster": {
-                      "spark_version": "13.3.x-scala2.12",
-                      "node_type_id": "Standard_DS3_v2",
-                      "num_workers": 1
-                  }
-              }
-              
-              # Lancer l'exécution
-              response = runs_api.submit_run(**run_params)
-              run_id = response['run_id']
-              
-              print(f"✅ Exécution lancée - Run ID: {run_id}")
-              print(f"🔗 Lien: {host}/#job/0/run/{run_id}")
-              
-              # Attendre la fin
-              print("⏳ Attente de la fin de l'exécution...")
-              
-              while True:
-                  run_info = runs_api.get_run(run_id)
-                  state = run_info['state']['life_cycle_state']
-                  
-                  if state in ['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR']:
-                      result_state = run_info['state'].get('result_state', 'UNKNOWN')
-                      
-                      if result_state == 'SUCCESS':
-                          print(f"✅ {notebook_path} exécuté avec succès")
-                          return True
-                      else:
-                          print(f"❌ {notebook_path} échoué: {result_state}")
-                          if 'state_message' in run_info['state']:
-                              print(f"Message: {run_info['state']['state_message']}")
-                          return False
-                  
-                  time.sleep(15)
-                  
-          except Exception as e:
-              print(f"❌ Erreur lors de l'exécution de {notebook_path}: {str(e)}")
-              return False
-      
-      # Exécuter tous les notebooks
-      print("=" * 80)
-      print("🎯 EXÉCUTION DES NOTEBOOKS")
-      print("=" * 80)
-      
-      all_success = True
-      for notebook in notebooks:
-          success = run_notebook(notebook)
-          if not success:
-              all_success = False
-              print(f"\n⚠️ Arrêt suite à l'échec de {notebook}")
-              break
-      
-      print("\n" + "=" * 80)
-      if all_success:
-          print("✅ TOUS LES NOTEBOOKS ONT ÉTÉ EXÉCUTÉS AVEC SUCCÈS")
-          print("=" * 80)
-          sys.exit(0)
-      else:
-          print("❌ ÉCHEC DE L'EXÉCUTION DES NOTEBOOKS")
-          print("=" * 80)
-          sys.exit(1)
-      PYTHON_SCRIPT
-      
-      python execute_notebooks.py
-      
-    displayName: 'Exécuter notebooks'
-    env:
-      DATABRICKS_HOST: $(DATABRICKS_HOST)
-      DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
-      DATABRICKS_WORKSPACE_PATH: $(DATABRICKS_WORKSPACE_PATH)
-    condition: eq(variables['HAS_CHANGES'], 'true')
+          # Télécharger depuis Databricks pour comparaison
+          echo "📥 Téléchargement depuis Databricks..."
+          databricks workspace export $(DATABRICKS_WORKSPACE_PATH)/$filename /tmp/$filename --format SOURCE 2>/dev/null
+          
+          if [ -f "/tmp/$filename" ]; then
+            echo "Hash MD5 Databricks: $(md5sum /tmp/$filename | cut -d' ' -f1)"
+            
+            if diff "$notebook" "/tmp/$filename" > /dev/null; then
+              echo "✅ Les fichiers sont identiques"
+            else
+              echo "⚠️ LES FICHIERS SONT DIFFÉRENTS!"
+              echo "Différences:"
+              diff "$notebook" "/tmp/$filename" | head -20
+            fi
+          else
+            echo "⚠️ Impossible de télécharger depuis Databricks"
+          fi
+          
+          echo "---"
+        fi
+      done
+    displayName: '🔍 Vérifier synchronisation'
