@@ -2,72 +2,129 @@ trigger:
   branches:
     include:
       - main
+  paths:
+    include:
+      - notebooks/**
+
+pool:
+  vmImage: 'ubuntu-latest'
 
 variables:
-  DATABRICKS_WORKSPACE_URL: "https://adb-xxxx.xx.azuredatabricks.net"
-  DATABRICKS_TOKEN: "$(databricksToken)"     # Stocké dans Azure DevOps Library
-  NOTEBOOKS_PATH: "/Repos/mon-projet/notebooks"
-  LOCAL_PATH: "notebooks/"
+  - group: variable group
+  - name: DATABRICKS_HOST
+    value: 'https://adb-1119135389290183.3.azuredatabricks.net'
+  - name: DATABRICKS_WORKSPACE_PATH
+    value: '/Workspace/Users/mohamedazrou2003@gmail.com'
+  - name: DATABRICKS_JOB_ID
+    value: '89'   # Ton job Databricks
 
-stages:
+steps:
+  ###############################################################
+  # DEBUG REPO
+  ###############################################################
+  - script: |
+      echo "📂 STRUCTURE DU REPOSITORY:"
+      ls -R
+      echo ""
+      echo "📁 Contenu du dossier notebooks:"
+      ls -la notebooks/ || echo "❌ Le dossier notebooks n'existe pas!"
+    displayName: '🔍 DEBUG - Structure du repo'
+  
+  - script: |
+      echo "🔍 COMMITS RÉCENTS:"
+      git log --oneline -5
+      echo ""
+      echo "📝 FICHIERS MODIFIÉS:"
+      git diff --name-only HEAD~1 HEAD || git ls-files
+      echo ""
+      echo "🎯 NOTEBOOKS MODIFIÉS:"
+      git diff --name-only HEAD~1 HEAD | grep "^notebooks/" || echo "Aucun notebook modifié"
+    displayName: '🔍 DEBUG - Changements détectés'
 
-# ──────────────────────
-# 1️⃣ CONTINUOUS INTEGRATION
-# ──────────────────────
-- stage: CI
-  displayName: "CI - Validation du code"
-  jobs:
-    - job: Validate
-      steps:
+  ###############################################################
+  # PYTHON + DATABRICKS CLI
+  ###############################################################
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.10'
+    displayName: 'Installer Python 3.10'
 
-        - checkout: self
+  - script: |
+      pip install -r requirements.txt || true
+      pip install databricks-cli
+    displayName: 'Installer dépendances'
 
-        - task: UsePythonVersion@0
-          inputs:
-            versionSpec: '3.10'
+  ###############################################################
+  # CONFIGURATION DATABRICKS CLI (VERSION STABLE)
+  ###############################################################
+  - script: |
+      echo "🔧 Création du fichier ~/.databrickscfg"
+      mkdir -p ~/.databricks
+      cat > ~/.databrickscfg <<EOF
+      [DEFAULT]
+      host = $(DATABRICKS_HOST)
+      token = $(databricksToken)
+      EOF
 
-        - script: |
-            pip install black flake8 databricks-cli
-            black --check .
-            flake8 .
-          displayName: "Validation du style Python"
+      echo "📄 Contenu du fichier de config:"
+      cat ~/.databrickscfg
 
-# ──────────────────────
-# 2️⃣ CONTINUOUS DELIVERY (Deployment vers Databricks)
-# ──────────────────────
-- stage: CD
-  displayName: "CD - Deploy vers Azure Databricks"
-  dependsOn: CI
-  jobs:
-    - job: Deploy
-      steps:
+      echo "🔌 Test de connexion :"
+      databricks workspace ls /
+    displayName: 'Configurer Databricks CLI'
 
-        - checkout: self
+  ###############################################################
+  # DEPLOIEMENT DES NOTEBOOKS
+  ###############################################################
+  - script: |
+      echo "📤 DEPLOIEMENT DES NOTEBOOKS"
+      echo "Source: $(Build.SourcesDirectory)/notebooks"
+      echo "Destination: $(DATABRICKS_WORKSPACE_PATH)"
+      echo ""
 
-        # Login à Databricks
-        - script: |
-            databricks configure --token <<EOF
-            $(DATABRICKS_WORKSPACE_URL)
-            $(DATABRICKS_TOKEN)
-            EOF
-          displayName: "Databricks CLI - Login"
+      if [ ! -d "notebooks" ]; then
+        echo "❌ ERREUR: Le dossier 'notebooks' n'existe pas!"
+        exit 1
+      fi
 
-        # Synchronisation du code vers Databricks Repos
-        - script: |
-            databricks repos update \
-              --path "$(NOTEBOOKS_PATH)" \
-              --branch "main"
-          displayName: "Sync Repos"
+      echo "📝 Fichiers à déployer :"
+      find notebooks -type f
 
-        # Upload manuel (si tu n’utilises pas Repos)
-        - script: |
-            databricks workspace import_dir \
-              $(LOCAL_PATH) $(NOTEBOOKS_PATH) \
-              --overwrite
-          displayName: "Upload notebooks → Workspace"
+      databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
 
-        # (Optionnel) Exécuter un notebook de validation
-        - script: |
-            RUN_ID=$(databricks jobs run-now --job-id 1234 | jq -r '.run_id')
-            echo "Run ID: $RUN_ID"
-          displayName: "Exécution job de validation"
+      if [ $? -eq 0 ]; then
+        echo "✅ Déploiement réussi!"
+        databricks workspace ls -l $(DATABRICKS_WORKSPACE_PATH)
+      else
+        echo "❌ Échec du déploiement"
+        exit 1
+      fi
+    displayName: 'Déployer notebooks vers Databricks'
+
+  ###############################################################
+  # EXECUTION D’UN JOB DATABRICKS
+  ###############################################################
+  - script: sudo apt-get install -y jq
+    displayName: 'Installer jq'
+
+  - script: |
+      echo "🚀 Exécution du job Databricks ID=$(DATABRICKS_JOB_ID)"
+
+      RESPONSE=$(databricks jobs run-now --job-id $(DATABRICKS_JOB_ID))
+      echo "Réponse API:"
+      echo "$RESPONSE"
+
+      run_id=$(echo "$RESPONSE" | jq -r '.run_id')
+
+      if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+        echo "❌ ERREUR: Impossible de récupérer run_id !"
+        exit 1
+      fi
+
+      echo "▶️ Run ID lancé : $run_id"
+      echo "⏳ En attente de la fin du job..."
+
+      databricks runs wait --run-id $run_id
+
+      echo "✅ Job Databricks terminé avec succès!"
+    displayName: '🚀 Exécuter job Databricks après déploiement'
