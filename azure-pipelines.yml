@@ -1,192 +1,224 @@
 trigger:
-  branches:
-    include:
-      - main
-  paths:
-    include:
-      - notebooks/**
+  - main
 
 pool:
   vmImage: 'ubuntu-latest'
 
 variables:
-  - group: variable group
-  - name: DATABRICKS_HOST
-    value: 'https://adb-1119135389290183.3.azuredatabricks.net'
-  - name: DATABRICKS_WORKSPACE_PATH
-    value: '/Workspace/Users/mohamedazrou2003@gmail.com'
-  - name: DATABRICKS_JOB_ID
-    value: '811728064107146'
+  DATABRICKS_HOST: 'https://adb-xxxxx.azuredatabricks.net'  # Remplacez par votre URL Databricks
+  DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)  # Token stocké dans Azure DevOps comme variable secrète
+  JOB_ID: '811728064107146'  # Votre ID de job existant
 
-steps:
-# 1️⃣ DEBUG : Structure repo
-- script: |
-    echo "📂 STRUCTURE DU REPO :"
-    ls -R
-    echo "📁 Fichiers dans notebooks/"
-    ls -la notebooks/ || echo "❌ Le dossier notebooks n'existe pas"
-  displayName: "🔍 DEBUG - Structure du repo"
-
-# 2️⃣ DEBUG : Fichiers modifiés
-- script: |
-    echo "🔍 COMMITS RÉCENTS"
-    git log --oneline -5 || echo "Pas d'historique git"
-    echo "📝 FICHIERS MODIFIÉS"
-    git diff --name-only HEAD~1 HEAD 2>/dev/null || git ls-files
-    echo "🎯 NOTEBOOKS MODIFIÉS"
-    git diff --name-only HEAD~1 HEAD 2>/dev/null | grep "^notebooks/" || echo "Aucun notebook modifié"
-  displayName: "🔍 DEBUG - Changements détectés"
-
-# 3️⃣ Installer Python
-- task: UsePythonVersion@0
-  inputs:
-    versionSpec: '3.10'
-  displayName: "Installer Python 3.10"
-
-# 4️⃣ Installer dépendances
-- script: |
-    pip install databricks-cli
-    if [ -f "requirements.txt" ]; then
-      pip install -r requirements.txt
-    else
-      echo "ℹ️ Aucun requirements.txt trouvé"
-    fi
-  displayName: "Installer dépendances"
-
-# 5️⃣ Configurer Databricks CLI
-- script: |
-    mkdir -p ~/.databricks
-    cat > ~/.databrickscfg <<EOF
-    [DEFAULT]
-    host = $(DATABRICKS_HOST)
-    token = $(DATABRICKS_TOKEN)
-    EOF
-    echo "🔌 Test CLI Databricks"
-    databricks --version
-    databricks workspace ls / || echo "⚠️ Erreur de connexion Databricks"
-  displayName: "Configurer Databricks CLI"
-
-# 6️⃣ Déployer tous les notebooks vers Databricks
-- script: |
-    echo "📤 Déploiement des notebooks vers Databricks..."
-    
-    if [ ! -d "notebooks" ]; then
-      echo "❌ ERREUR : Le dossier notebooks n'existe pas"
-      exit 1
-    fi
-    
-    # Vérifier qu'il y a des fichiers dans notebooks/
-    if [ -z "$(ls -A notebooks/)" ]; then
-      echo "⚠️ ATTENTION : Le dossier notebooks est vide"
-      exit 1
-    fi
-    
-    echo "📂 Création du répertoire workspace si nécessaire..."
-    databricks workspace mkdirs $(DATABRICKS_WORKSPACE_PATH) || echo "Répertoire déjà existant"
-    
-    echo "📤 Import des notebooks..."
-    databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
-    
-    if [ $? -eq 0 ]; then
-      echo "✅ Déploiement réussi !"
-      echo "📋 Contenu du workspace :"
-      databricks workspace ls -l $(DATABRICKS_WORKSPACE_PATH)
-    else
-      echo "❌ ERREUR lors du déploiement"
-      exit 1
-    fi
-  displayName: "Déployer notebooks vers Databricks"
-
-# 7️⃣ Vérifier synchro notebooks
-- script: |
-    echo "🔄 Comparaison des notebooks..."
-    
-    for notebook in notebooks/*.py notebooks/*.ipynb; do
-      # Vérifier si le fichier existe (éviter l'erreur si aucun fichier ne correspond)
-      if [ ! -f "$notebook" ]; then
-        continue
-      fi
-      
-      filename=$(basename "$notebook")
-      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      echo "📄 Notebook local : $filename"
-      echo "Hash local : $(md5sum "$notebook" | cut -d' ' -f1)"
-      
-      # Exporter depuis Databricks
-      databricks workspace export "$(DATABRICKS_WORKSPACE_PATH)/$filename" "/tmp/$filename" --format SOURCE 2>/dev/null
-      
-      if [ -f "/tmp/$filename" ]; then
-        echo "Hash Databricks : $(md5sum /tmp/$filename | cut -d' ' -f1)"
-        
-        if diff -q "$notebook" "/tmp/$filename" > /dev/null 2>&1; then
-          echo "✔️ Identique"
-        else
-          echo "⚠️ Différences détectées"
-          echo "Détails des différences :"
-          diff "$notebook" "/tmp/$filename" | head -20
-        fi
-        rm -f "/tmp/$filename"
-      else
-        echo "⚠️ Impossible d'exporter depuis Databricks"
-      fi
-    done
-  displayName: "🔍 Vérifier synchronisation notebooks"
-  continueOnError: true
-
-# 8️⃣ Installer jq
-- script: |
-    sudo apt-get update -qq
-    sudo apt-get install -y jq
-    jq --version
-  displayName: "Installer jq"
-
-# 9️⃣ Exécuter le job Databricks
-- script: |
-    echo "🚀 Exécution du job Databricks : $(DATABRICKS_JOB_ID)"
-    
-    # Lancer le job
-    response=$(databricks jobs run-now --job-id $(DATABRICKS_JOB_ID) 2>&1)
-    
-    echo "📨 Réponse du lancement :"
-    echo "$response"
-    
-    # Extraire le run_id
-    run_id=$(echo "$response" | jq -r '.run_id // empty' 2>/dev/null)
-    
-    if [ -z "$run_id" ] || [ "$run_id" == "null" ]; then
-      echo "❌ ERREUR : Impossible de récupérer le run_id"
-      echo "Réponse brute : $response"
-      exit 1
-    fi
-    
-    echo "▶️ Run ID : $run_id"
-    echo "🔗 Lien : $(DATABRICKS_HOST)/#job/$(DATABRICKS_JOB_ID)/run/$run_id"
-    
-    echo "⏳ Attente de la fin du job..."
-    
-    # Attendre la fin du job avec timeout
-    timeout 1800 databricks runs wait --run-id $run_id
-    wait_exit_code=$?
-    
-    if [ $wait_exit_code -eq 0 ]; then
-      echo "✅ Job terminé avec succès !"
-      
-      # Récupérer le statut final
-      run_status=$(databricks runs get --run-id $run_id | jq -r '.state.life_cycle_state')
-      result_state=$(databricks runs get --run-id $run_id | jq -r '.state.result_state')
-      
-      echo "📊 État final : $run_status"
-      echo "📊 Résultat : $result_state"
-      
-      if [ "$result_state" != "SUCCESS" ]; then
-        echo "❌ Le job s'est terminé avec des erreurs : $result_state"
-        exit 1
-      fi
-    elif [ $wait_exit_code -eq 124 ]; then
-      echo "⏱️ TIMEOUT : Le job a dépassé 30 minutes"
-      exit 1
-    else
-      echo "❌ Erreur lors de l'attente du job"
-      exit 1
-    fi
-  displayName: "🚀 Exécuter job Databricks"
+stages:
+  - stage: DeployAndRun
+    displayName: '🚀 Déployer et Exécuter Job Databricks'
+    jobs:
+      - job: DatabricksJob
+        displayName: 'Job Databricks'
+        steps:
+          
+          # Étape 1 : Installation et configuration
+          - task: Bash@3
+            displayName: '🔧 Installation Databricks CLI'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Installation de Databricks CLI..."
+                pip install databricks-cli
+                databricks --version
+          
+          # Étape 2 : Configuration de l'authentification
+          - task: Bash@3
+            displayName: '🔐 Configuration authentification'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Configuration de Databricks CLI..."
+                
+                # Créer le fichier de configuration
+                mkdir -p ~/.databrickscfg
+                cat <<EOF > ~/.databrickscfg
+                [DEFAULT]
+                host = $(DATABRICKS_HOST)
+                token = $(DATABRICKS_TOKEN)
+                EOF
+                
+                # Configurer pour utiliser Jobs API 2.1
+                databricks jobs configure --version=2.1
+                
+                echo "✅ Configuration terminée"
+          
+          # Étape 3 : Vérifier/Créer la configuration du job
+          - task: Bash@3
+            displayName: '📝 Vérifier configuration du job'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Vérification du job $(JOB_ID)..."
+                
+                # Vérifier si le job existe
+                JOB_INFO=$(databricks jobs get --job-id $(JOB_ID) 2>&1)
+                
+                if echo "$JOB_INFO" | grep -q "RESOURCE_DOES_NOT_EXIST"; then
+                  echo "⚠️ Le job n'existe pas, création d'un nouveau job..."
+                  
+                  # Créer la configuration du job
+                  cat <<EOF > job_config.json
+                  {
+                    "name": "Mon Job Databricks - Pipeline",
+                    "tasks": [
+                      {
+                        "task_key": "notebook_task",
+                        "notebook_task": {
+                          "notebook_path": "/Users/votre@email.com/mon_notebook",
+                          "base_parameters": {
+                            "env": "production",
+                            "date": "$(Build.BuildNumber)"
+                          }
+                        },
+                        "new_cluster": {
+                          "spark_version": "13.3.x-scala2.12",
+                          "node_type_id": "Standard_DS3_v2",
+                          "num_workers": 2,
+                          "spark_conf": {
+                            "spark.databricks.delta.preview.enabled": "true"
+                          }
+                        },
+                        "timeout_seconds": 3600,
+                        "max_retries": 2
+                      }
+                    ],
+                    "timeout_seconds": 7200,
+                    "max_concurrent_runs": 1
+                  }
+                  EOF
+                  
+                  # Créer le job
+                  NEW_JOB=$(databricks jobs create --json-file job_config.json)
+                  NEW_JOB_ID=$(echo $NEW_JOB | jq -r '.job_id')
+                  echo "✅ Nouveau job créé avec l'ID: $NEW_JOB_ID"
+                  echo "##vso[task.setvariable variable=JOB_ID]$NEW_JOB_ID"
+                  
+                else
+                  echo "✅ Job $(JOB_ID) existe déjà"
+                  
+                  # Vérifier si le job a des tâches
+                  TASKS=$(echo "$JOB_INFO" | jq -r '.settings.tasks // empty')
+                  
+                  if [ -z "$TASKS" ] || [ "$TASKS" = "null" ]; then
+                    echo "⚠️ Le job n'a pas de tâches configurées, mise à jour..."
+                    
+                    # Créer la configuration avec tâches
+                    cat <<EOF > job_update.json
+                    {
+                      "job_id": $(JOB_ID),
+                      "new_settings": {
+                        "name": "Mon Job Databricks - Pipeline Updated",
+                        "tasks": [
+                          {
+                            "task_key": "notebook_task",
+                            "notebook_task": {
+                              "notebook_path": "/Users/votre@email.com/mon_notebook",
+                              "base_parameters": {
+                                "env": "production",
+                                "date": "$(Build.BuildNumber)"
+                              }
+                            },
+                            "new_cluster": {
+                              "spark_version": "13.3.x-scala2.12",
+                              "node_type_id": "Standard_DS3_v2",
+                              "num_workers": 2
+                            },
+                            "timeout_seconds": 3600
+                          }
+                        ],
+                        "timeout_seconds": 7200,
+                        "max_concurrent_runs": 1
+                      }
+                    }
+                    EOF
+                    
+                    # Mettre à jour le job
+                    databricks jobs reset --json-file job_update.json
+                    echo "✅ Job mis à jour avec succès"
+                  fi
+                fi
+          
+          # Étape 4 : Lancer le job
+          - task: Bash@3
+            displayName: '🚀 Exécuter job Databricks'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "🚀 Lancement du job $(JOB_ID)..."
+                
+                # Lancer le job
+                RUN_OUTPUT=$(databricks jobs run-now --job-id $(JOB_ID) 2>&1)
+                echo "📨 Réponse du lancement:"
+                echo "$RUN_OUTPUT"
+                
+                # Extraire le run_id
+                RUN_ID=$(echo "$RUN_OUTPUT" | jq -r '.run_id // empty' 2>/dev/null)
+                
+                if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+                  echo "❌ ERREUR: Impossible de récupérer le run_id"
+                  echo "Réponse complète: $RUN_OUTPUT"
+                  exit 1
+                fi
+                
+                echo "✅ Job lancé avec succès!"
+                echo "📊 Run ID: $RUN_ID"
+                echo "🔗 URL: $(DATABRICKS_HOST)/#job/$(JOB_ID)/run/$RUN_ID"
+                
+                # Sauvegarder le run_id pour les étapes suivantes
+                echo "##vso[task.setvariable variable=RUN_ID]$RUN_ID"
+          
+          # Étape 5 : Surveiller l'exécution (optionnel)
+          - task: Bash@3
+            displayName: '⏳ Attendre fin d\'exécution'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "⏳ Surveillance de l'exécution du job..."
+                
+                MAX_WAIT=3600  # 1 heure maximum
+                ELAPSED=0
+                SLEEP_TIME=30
+                
+                while [ $ELAPSED -lt $MAX_WAIT ]; do
+                  # Obtenir le statut
+                  RUN_STATUS=$(databricks runs get --run-id $(RUN_ID) | jq -r '.state.life_cycle_state')
+                  RESULT_STATE=$(databricks runs get --run-id $(RUN_ID) | jq -r '.state.result_state // "RUNNING"')
+                  
+                  echo "📊 Statut: $RUN_STATUS - Résultat: $RESULT_STATE"
+                  
+                  # Vérifier si terminé
+                  if [ "$RUN_STATUS" = "TERMINATED" ] || [ "$RUN_STATUS" = "SKIPPED" ]; then
+                    if [ "$RESULT_STATE" = "SUCCESS" ]; then
+                      echo "✅ Job terminé avec succès!"
+                      exit 0
+                    else
+                      echo "❌ Job échoué avec le statut: $RESULT_STATE"
+                      databricks runs get-output --run-id $(RUN_ID)
+                      exit 1
+                    fi
+                  fi
+                  
+                  # Attendre avant la prochaine vérification
+                  sleep $SLEEP_TIME
+                  ELAPSED=$((ELAPSED + SLEEP_TIME))
+                done
+                
+                echo "⚠️ Timeout atteint après $MAX_WAIT secondes"
+                exit 1
+            condition: succeededOrFailed()
+          
+          # Étape 6 : Récupérer les logs (optionnel)
+          - task: Bash@3
+            displayName: '📋 Récupérer logs'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "📋 Récupération des logs..."
+                databricks runs get-output --run-id $(RUN_ID)
+            condition: always()
