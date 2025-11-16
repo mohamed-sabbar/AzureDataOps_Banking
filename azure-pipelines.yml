@@ -25,9 +25,12 @@ steps:
   displayName: '🐍 Installer Python 3.10'
 
 - script: |
-    echo "📦 Installation des dépendances..."
+    echo "📦 Installer Databricks SDK et jq..."
     pip install --upgrade pip
-    pip install databricks-cli jq
+    pip uninstall -y databricks-cli
+    pip install --upgrade databricks-sdk jq
+    databricks --version
+    jq --version
   displayName: '📦 Installer dépendances'
 
 # =============================================
@@ -43,11 +46,8 @@ steps:
     token = $(DATABRICKS_TOKEN)
     EOF
 
-    echo "➡️ Passer en Jobs API 2.1"
-    databricks jobs configure --version=2.1
-
     echo "🔌 Test de connexion"
-    databricks workspace ls /
+    databricks workspace list /
   displayName: '🔐 Configurer Databricks CLI'
 
 # =============================================
@@ -57,15 +57,13 @@ steps:
     echo "📂 Structure du projet :"
     ls -la
 
-    echo ""
-    echo "📁 Contenu de notebooks/ :"
     if [ -d "notebooks" ]; then
+      echo "📁 Contenu de notebooks/"
       ls -la notebooks/
       file_count=$(find notebooks -type f \( -name "*.py" -o -name "*.ipynb" \) | wc -l)
-      echo ""
-      echo "📊 Nombre de notebooks trouvés : $file_count"
+      echo "📊 Nombre de notebooks : $file_count"
       if [ $file_count -eq 0 ]; then
-        echo "⚠️ Aucun notebook trouvé dans notebooks/"
+        echo "⚠️ Aucun notebook trouvé"
         exit 1
       fi
     else
@@ -88,24 +86,15 @@ steps:
 # =============================================
 - script: |
     echo "🚀 Lancement du job Databricks..."
-    echo "🎯 Job ID : $(DATABRICKS_JOB_ID)"
+    JOB_ID=$(DATABRICKS_JOB_ID)
 
-    response=$(databricks jobs run-now --job-id $(DATABRICKS_JOB_ID))
-    echo "📨 Réponse brute :"
-    echo "$response"
-
-    # Extraire JSON
-    json_block=$(echo "$response" | sed -n '/{/,/}/p')
-    echo "📦 JSON extrait : $json_block"
-
-    # Extraire run_id
-    run_id=$(echo "$json_block" | jq -r '.run_id')
+    run_id=$(databricks jobs run-now --job-id $JOB_ID | jq -r '.run_id')
     if [[ -z "$run_id" || "$run_id" == "null" ]]; then
-      echo "❌ Impossible d’extraire run_id"
+      echo "❌ Impossible d'extraire run_id"
       exit 1
     fi
-    echo "✅ Job lancé ! Run ID : $run_id"
 
+    echo "✅ Job lancé ! Run ID : $run_id"
     echo "##vso[task.setvariable variable=RUN_ID]$run_id"
   displayName: '🚀 Lancer job Databricks'
 
@@ -114,26 +103,25 @@ steps:
 # =============================================
 - script: |
     echo "⏳ Attente de la fin du job Run ID : $(RUN_ID)"
-
+    run_id=$(RUN_ID)
     max_attempts=60
     attempt=0
     sleep_seconds=30
-    run_id=$(RUN_ID)
 
     while [ $attempt -lt $max_attempts ]; do
       attempt=$((attempt+1))
-      job_state=$(databricks runs get --run-id $run_id | jq -r '.state.life_cycle_state')
-      result_state=$(databricks runs get --run-id $run_id | jq -r '.state.result_state // empty')
+      job_info=$(databricks runs get --run-id $run_id)
+      job_state=$(echo "$job_info" | jq -r '.state.life_cycle_state')
+      result_state=$(echo "$job_info" | jq -r '.state.result_state // empty')
       echo "⏱️ Tentative $attempt : $job_state / $result_state"
 
-      if [ "$job_state" == "TERMINATED" ] || [ "$job_state" == "SKIPPED" ] || [ "$job_state" == "INTERNAL_ERROR" ]; then
+      if [[ "$job_state" == "TERMINATED" || "$job_state" == "SKIPPED" || "$job_state" == "INTERNAL_ERROR" ]]; then
           break
       fi
-
       sleep $sleep_seconds
     done
 
-    if [ "$result_state" == "SUCCESS" ]; then
+    if [[ "$result_state" == "SUCCESS" ]]; then
         echo "🎉 JOB TERMINÉ AVEC SUCCÈS"
     else
         echo "❌ JOB ÉCHOUÉ : $result_state"
