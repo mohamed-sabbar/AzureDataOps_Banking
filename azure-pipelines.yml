@@ -84,7 +84,7 @@ steps:
   displayName: '📤 Déployer notebooks Databricks'
 
 # =============================================
-# 5. Lancer le job Databricks (corrigé)
+# 5. Lancer le job Databricks
 # =============================================
 - script: |
     echo "🚀 Lancement du job Databricks..."
@@ -118,33 +118,39 @@ steps:
   displayName: '🚀 Lancer job Databricks'
 
 # =============================================
-# 6. Attendre la fin et vérifier le résultat
+# 6. Attendre la fin du job et vérifier résultat
 # =============================================
 - script: |
-    echo "⏳ Attente de la fin du job..."
-    echo "▶️ Run ID : $(RUN_ID)"
+    echo "⏳ Attente de la fin du job Run ID : $(RUN_ID)"
 
-    # Timeout 30 min
-    timeout 1800 databricks runs wait --run-id $(RUN_ID)
-    wait_exit=$?
+    max_attempts=60   # 60 tentatives x 30s = 30 minutes max
+    attempt=0
+    sleep_seconds=30
+    run_id=$(RUN_ID)
 
-    if [ $wait_exit -eq 0 ]; then
-      details=$(databricks runs get --run-id $(RUN_ID))
-      result=$(echo "$details" | jq -r '.state.result_state')
-      echo "📊 Resultat : $result"
+    while [ $attempt -lt $max_attempts ]; do
+      attempt=$((attempt+1))
 
-      if [ "$result" != "SUCCESS" ]; then
-        echo "❌ JOB ÉCHOUÉ"
-        databricks runs get-output --run-id $(RUN_ID)
-        exit 1
+      # Récupérer l'état du job
+      job_state=$(databricks runs get --run-id $run_id | jq -r '.state.life_cycle_state')
+      result_state=$(databricks runs get --run-id $run_id | jq -r '.state.result_state // empty')
+
+      echo "⏱️ Tentative $attempt : $job_state / $result_state"
+
+      if [ "$job_state" == "TERMINATED" ] || [ "$job_state" == "SKIPPED" ] || [ "$job_state" == "INTERNAL_ERROR" ]; then
+          break
       fi
-      echo "🎉 JOB TERMINÉ AVEC SUCCÈS"
-    elif [ $wait_exit -eq 124 ]; then
-      echo "⏱️ TIMEOUT (30min) : vérifier manuellement"
-      exit 1
+
+      sleep $sleep_seconds
+    done
+
+    # Vérifier résultat final
+    if [ "$result_state" == "SUCCESS" ]; then
+        echo "🎉 JOB TERMINÉ AVEC SUCCÈS"
     else
-      echo "❌ Erreur inattendue pendant l’attente du job"
-      exit 1
+        echo "❌ JOB ÉCHOUÉ : $result_state"
+        databricks runs get-output --run-id $run_id
+        exit 1
     fi
   displayName: '⏳ Attendre et vérifier résultat'
 
