@@ -16,7 +16,7 @@ variables:
     value: '88667285424105'
 
 # =============================================
-# 1. Installer Python et dépendances
+# 1. Installer Python et dépendances + config CLI
 # =============================================
 steps:
 - task: UsePythonVersion@0
@@ -29,14 +29,10 @@ steps:
     pip install --upgrade pip
     pip uninstall -y databricks-cli
     pip install --upgrade databricks-sdk jq
-    databricks --version
-    jq --version
-  displayName: '📦 Installer dépendances'
 
-# =============================================
-# 2. Configurer Databricks CLI (API 2.1)
-# =============================================
-- script: |
+    # Ajouter le binaire pip local au PATH
+    export PATH="$HOME/.local/bin:$PATH"
+
     echo "🔐 Configurer Databricks CLI..."
     mkdir -p ~/.databricks
 
@@ -48,10 +44,10 @@ steps:
 
     echo "🔌 Test de connexion"
     databricks workspace list /
-  displayName: '🔐 Configurer Databricks CLI'
+  displayName: '📦 Installer et configurer Databricks SDK'
 
 # =============================================
-# 3. Vérifier structure du projet
+# 2. Vérifier structure du projet
 # =============================================
 - script: |
     echo "📂 Structure du projet :"
@@ -73,7 +69,7 @@ steps:
   displayName: '🔍 Vérifier structure du projet'
 
 # =============================================
-# 4. Déployer les notebooks
+# 3. Déployer les notebooks
 # =============================================
 - script: |
     echo "📤 Déploiement des notebooks..."
@@ -82,7 +78,7 @@ steps:
   displayName: '📤 Déployer notebooks Databricks'
 
 # =============================================
-# 5. Lancer le job Databricks
+# 4. Lancer le job Databricks
 # =============================================
 - script: |
     echo "🚀 Lancement du job Databricks..."
@@ -99,7 +95,7 @@ steps:
   displayName: '🚀 Lancer job Databricks'
 
 # =============================================
-# 6. Attendre la fin du job et vérifier résultat
+# 5. Attendre la fin du job et vérifier résultat
 # =============================================
 - script: |
     echo "⏳ Attente de la fin du job Run ID : $(RUN_ID)"
@@ -131,7 +127,7 @@ steps:
   displayName: '⏳ Attendre et vérifier résultat'
 
 # =============================================
-# 7. Récapitulatif final
+# 6. Récapitulatif final
 # =============================================
 - script: |
     echo "═══════════════════════════════════════════"
