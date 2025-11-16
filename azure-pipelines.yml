@@ -7,7 +7,7 @@ pool:
   vmImage: 'ubuntu-latest'
 
 variables:
-  - group: variable group   # Contient DATABRICKS_TOKEN
+  - group: variable group
   - name: DATABRICKS_HOST
     value: 'https://adb-1119135389290183.3.azuredatabricks.net'
   - name: DATABRICKS_JOB_ID
@@ -15,7 +15,7 @@ variables:
 
 steps:
 # =============================================
-# 1. Installer Python et Databricks SDK
+# 1. Installer Python et Databricks CLI
 # =============================================
 - task: UsePythonVersion@0
   inputs:
@@ -24,8 +24,9 @@ steps:
 
 - script: |
     pip install --upgrade pip
-    pip install --upgrade databricks-sdk jq
-  displayName: '📦 Installer Databricks SDK'
+    pip install databricks-cli jq
+    echo "✅ Databricks CLI et jq installés"
+  displayName: '📦 Installer dépendances'
 
 # =============================================
 # 2. Configurer Databricks CLI
@@ -41,12 +42,18 @@ steps:
   displayName: '🔐 Configurer Databricks CLI'
 
 # =============================================
-# 3. Lancer le job Databricks
+# 3. Lancer le job Databricks (avec PATH corrigé)
 # =============================================
 - script: |
+    # Ajouter le dossier des binaires Python locaux au PATH
+    export PATH=$HOME/.local/bin:$PATH
+
+    # Vérifier que databricks CLI est accessible
+    databricks --version
+
     JOB_ID=$(DATABRICKS_JOB_ID)
     run_id=$(databricks jobs run-now --job-id $JOB_ID | jq -r '.run_id')
-    
+
     if [[ -z "$run_id" || "$run_id" == "null" ]]; then
       echo "❌ Impossible d'extraire run_id"
       exit 1
