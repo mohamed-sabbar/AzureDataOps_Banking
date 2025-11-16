@@ -13,7 +13,7 @@ variables:
   - name: DATABRICKS_WORKSPACE_PATH
     value: '/Workspace/Users/mohamedazrou2003@gmail.com'
   - name: DATABRICKS_JOB_ID
-    value: '89'
+    value: '88667285424105'
 
 steps:
   # =============================================
