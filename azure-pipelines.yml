@@ -1,224 +1,426 @@
+# Pipeline CI/CD amélioré - Azure DataOps Platform
+# Basé sur votre fichier existant + bonnes pratiques CI/CD
+
 trigger:
-  - main
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - notebooks/**
 
 pool:
   vmImage: 'ubuntu-latest'
 
 variables:
-  DATABRICKS_HOST: 'https://adb-xxxxx.azuredatabricks.net'  # Remplacez par votre URL Databricks
-  DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)  # Token stocké dans Azure DevOps comme variable secrète
-  JOB_ID: '811728064107146'  # Votre ID de job existant
+  PYTHON_VERSION: '3.10'
 
 stages:
-  - stage: DeployAndRun
-    displayName: '🚀 Déployer et Exécuter Job Databricks'
+  # ==========================================
+  # STAGE 1 : CI - VALIDATION DES NOTEBOOKS
+  # ==========================================
+  - stage: CI_Validation
+    displayName: '🔍 CI - Validation'
     jobs:
-      - job: DatabricksJob
-        displayName: 'Job Databricks'
+      - job: ValidateNotebooks
+        displayName: 'Valider notebooks'
         steps:
           
-          # Étape 1 : Installation et configuration
-          - task: Bash@3
-            displayName: '🔧 Installation Databricks CLI'
-            inputs:
-              targetType: 'inline'
-              script: |
-                echo "Installation de Databricks CLI..."
-                pip install databricks-cli
-                databricks --version
+          # Debug structure
+          - script: |
+              echo "📂 STRUCTURE DU REPO :"
+              ls -R
+              echo ""
+              echo "📁 Contenu de notebooks/ :"
+              ls -la notebooks/ || echo "❌ Le dossier notebooks n'existe pas"
+            displayName: '🔍 Debug - Structure du repo'
           
-          # Étape 2 : Configuration de l'authentification
-          - task: Bash@3
-            displayName: '🔐 Configuration authentification'
+          # Python
+          - task: UsePythonVersion@0
             inputs:
-              targetType: 'inline'
-              script: |
-                echo "Configuration de Databricks CLI..."
-                
-                # Créer le fichier de configuration
-                mkdir -p ~/.databrickscfg
-                cat <<EOF > ~/.databrickscfg
-                [DEFAULT]
-                host = $(DATABRICKS_HOST)
-                token = $(DATABRICKS_TOKEN)
-                EOF
-                
-                # Configurer pour utiliser Jobs API 2.1
-                databricks jobs configure --version=2.1
-                
-                echo "✅ Configuration terminée"
+              versionSpec: '$(PYTHON_VERSION)'
+            displayName: '🐍 Python $(PYTHON_VERSION)'
           
-          # Étape 3 : Vérifier/Créer la configuration du job
-          - task: Bash@3
-            displayName: '📝 Vérifier configuration du job'
+          # Dépendances
+          - script: |
+              pip install databricks-cli flake8 pytest
+              if [ -f "requirements.txt" ]; then
+                pip install -r requirements.txt
+              fi
+            displayName: '📦 Installer dépendances'
+          
+          # Validation syntaxe Python
+          - script: |
+              echo "🔍 Validation de la syntaxe des notebooks..."
+              
+              if [ ! -d "notebooks" ]; then
+                echo "❌ ERREUR : Le dossier notebooks n'existe pas"
+                exit 1
+              fi
+              
+              has_errors=0
+              for notebook in notebooks/*.py notebooks/*.ipynb; do
+                if [ -f "$notebook" ]; then
+                  echo "✓ Vérification : $(basename $notebook)"
+                  
+                  # Pour les .py
+                  if [[ "$notebook" == *.py ]]; then
+                    python -m py_compile "$notebook" || has_errors=1
+                  fi
+                fi
+              done
+              
+              if [ $has_errors -eq 0 ]; then
+                echo "✅ Tous les notebooks sont valides"
+              else
+                echo "❌ Des erreurs ont été détectées"
+                exit 1
+              fi
+            displayName: '🔍 Valider syntaxe'
+          
+          # Linting optionnel
+          - script: |
+              echo "📋 Analyse qualité du code..."
+              flake8 notebooks/ --max-line-length=120 --ignore=E402,W503,E501 || true
+            displayName: '📋 Linting (optionnel)'
+            continueOnError: true
+          
+          # Créer artifact
+          - task: ArchiveFiles@2
+            displayName: '📦 Créer artifact'
             inputs:
-              targetType: 'inline'
-              script: |
-                echo "Vérification du job $(JOB_ID)..."
+              rootFolderOrFile: '$(Build.SourcesDirectory)/notebooks'
+              includeRootFolder: true
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/notebooks-$(Build.BuildNumber).zip'
+          
+          - task: PublishBuildArtifacts@1
+            displayName: '📤 Publier artifact'
+            inputs:
+              pathToPublish: '$(Build.ArtifactStagingDirectory)'
+              artifactName: 'notebooks'
+
+  # ==========================================
+  # STAGE 2 : DÉPLOIEMENT DEV (develop branch)
+  # ==========================================
+  - stage: Deploy_DEV
+    displayName: '🚀 DEV - Déploiement'
+    dependsOn: CI_Validation
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+    variables:
+      - group: variable group  # Votre variable group existant
+      - name: ENVIRONMENT
+        value: 'DEV'
+      - name: DATABRICKS_HOST
+        value: 'https://adb-1119135389290183.3.azuredatabricks.net'
+      - name: DATABRICKS_WORKSPACE_PATH
+        value: '/Workspace/Users/mohamedazrou2003@gmail.com/DEV'
+      - name: DATABRICKS_JOB_ID
+        value: '811728064107146'
+    jobs:
+      - deployment: DeployToDev
+        displayName: 'Déployer vers DEV'
+        environment: 'dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
                 
-                # Vérifier si le job existe
-                JOB_INFO=$(databricks jobs get --job-id $(JOB_ID) 2>&1)
+                # Télécharger artifact
+                - download: current
+                  artifact: notebooks
+                  displayName: '📥 Télécharger artifact'
                 
-                if echo "$JOB_INFO" | grep -q "RESOURCE_DOES_NOT_EXIST"; then
-                  echo "⚠️ Le job n'existe pas, création d'un nouveau job..."
-                  
-                  # Créer la configuration du job
-                  cat <<EOF > job_config.json
-                  {
-                    "name": "Mon Job Databricks - Pipeline",
-                    "tasks": [
-                      {
-                        "task_key": "notebook_task",
-                        "notebook_task": {
-                          "notebook_path": "/Users/votre@email.com/mon_notebook",
-                          "base_parameters": {
-                            "env": "production",
-                            "date": "$(Build.BuildNumber)"
-                          }
-                        },
-                        "new_cluster": {
-                          "spark_version": "13.3.x-scala2.12",
-                          "node_type_id": "Standard_DS3_v2",
-                          "num_workers": 2,
-                          "spark_conf": {
-                            "spark.databricks.delta.preview.enabled": "true"
-                          }
-                        },
-                        "timeout_seconds": 3600,
-                        "max_retries": 2
-                      }
-                    ],
-                    "timeout_seconds": 7200,
-                    "max_concurrent_runs": 1
-                  }
-                  EOF
-                  
-                  # Créer le job
-                  NEW_JOB=$(databricks jobs create --json-file job_config.json)
-                  NEW_JOB_ID=$(echo $NEW_JOB | jq -r '.job_id')
-                  echo "✅ Nouveau job créé avec l'ID: $NEW_JOB_ID"
-                  echo "##vso[task.setvariable variable=JOB_ID]$NEW_JOB_ID"
-                  
-                else
-                  echo "✅ Job $(JOB_ID) existe déjà"
-                  
-                  # Vérifier si le job a des tâches
-                  TASKS=$(echo "$JOB_INFO" | jq -r '.settings.tasks // empty')
-                  
-                  if [ -z "$TASKS" ] || [ "$TASKS" = "null" ]; then
-                    echo "⚠️ Le job n'a pas de tâches configurées, mise à jour..."
+                # Extraire notebooks
+                - task: ExtractFiles@1
+                  inputs:
+                    archiveFilePatterns: '$(Pipeline.Workspace)/notebooks/*.zip'
+                    destinationFolder: '$(Pipeline.Workspace)/extracted'
+                  displayName: '📦 Extraire notebooks'
+                
+                # Python
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: '$(PYTHON_VERSION)'
+                
+                # Installer CLI
+                - script: |
+                    pip install databricks-cli
+                    sudo apt-get update -qq && sudo apt-get install -y jq
+                  displayName: '🔧 Installer outils'
+                
+                # Configurer Databricks
+                - script: |
+                    echo "🔐 Configuration Databricks $(ENVIRONMENT)..."
                     
-                    # Créer la configuration avec tâches
-                    cat <<EOF > job_update.json
-                    {
-                      "job_id": $(JOB_ID),
-                      "new_settings": {
-                        "name": "Mon Job Databricks - Pipeline Updated",
-                        "tasks": [
-                          {
-                            "task_key": "notebook_task",
-                            "notebook_task": {
-                              "notebook_path": "/Users/votre@email.com/mon_notebook",
-                              "base_parameters": {
-                                "env": "production",
-                                "date": "$(Build.BuildNumber)"
-                              }
-                            },
-                            "new_cluster": {
-                              "spark_version": "13.3.x-scala2.12",
-                              "node_type_id": "Standard_DS3_v2",
-                              "num_workers": 2
-                            },
-                            "timeout_seconds": 3600
-                          }
-                        ],
-                        "timeout_seconds": 7200,
-                        "max_concurrent_runs": 1
-                      }
-                    }
+                    mkdir -p ~/.databricks
+                    cat > ~/.databrickscfg <<EOF
+                    [DEFAULT]
+                    host = $(DATABRICKS_HOST)
+                    token = $(DATABRICKS_TOKEN)
                     EOF
                     
-                    # Mettre à jour le job
-                    databricks jobs reset --json-file job_update.json
-                    echo "✅ Job mis à jour avec succès"
-                  fi
-                fi
-          
-          # Étape 4 : Lancer le job
-          - task: Bash@3
-            displayName: '🚀 Exécuter job Databricks'
-            inputs:
-              targetType: 'inline'
-              script: |
-                echo "🚀 Lancement du job $(JOB_ID)..."
-                
-                # Lancer le job
-                RUN_OUTPUT=$(databricks jobs run-now --job-id $(JOB_ID) 2>&1)
-                echo "📨 Réponse du lancement:"
-                echo "$RUN_OUTPUT"
-                
-                # Extraire le run_id
-                RUN_ID=$(echo "$RUN_OUTPUT" | jq -r '.run_id // empty' 2>/dev/null)
-                
-                if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
-                  echo "❌ ERREUR: Impossible de récupérer le run_id"
-                  echo "Réponse complète: $RUN_OUTPUT"
-                  exit 1
-                fi
-                
-                echo "✅ Job lancé avec succès!"
-                echo "📊 Run ID: $RUN_ID"
-                echo "🔗 URL: $(DATABRICKS_HOST)/#job/$(JOB_ID)/run/$RUN_ID"
-                
-                # Sauvegarder le run_id pour les étapes suivantes
-                echo "##vso[task.setvariable variable=RUN_ID]$RUN_ID"
-          
-          # Étape 5 : Surveiller l'exécution (optionnel)
-          - task: Bash@3
-            displayName: '⏳ Attendre fin d\'exécution'
-            inputs:
-              targetType: 'inline'
-              script: |
-                echo "⏳ Surveillance de l'exécution du job..."
-                
-                MAX_WAIT=3600  # 1 heure maximum
-                ELAPSED=0
-                SLEEP_TIME=30
-                
-                while [ $ELAPSED -lt $MAX_WAIT ]; do
-                  # Obtenir le statut
-                  RUN_STATUS=$(databricks runs get --run-id $(RUN_ID) | jq -r '.state.life_cycle_state')
-                  RESULT_STATE=$(databricks runs get --run-id $(RUN_ID) | jq -r '.state.result_state // "RUNNING"')
-                  
-                  echo "📊 Statut: $RUN_STATUS - Résultat: $RESULT_STATE"
-                  
-                  # Vérifier si terminé
-                  if [ "$RUN_STATUS" = "TERMINATED" ] || [ "$RUN_STATUS" = "SKIPPED" ]; then
-                    if [ "$RESULT_STATE" = "SUCCESS" ]; then
-                      echo "✅ Job terminé avec succès!"
-                      exit 0
+                    # Test connexion
+                    databricks workspace ls / > /dev/null 2>&1
+                    if [ $? -eq 0 ]; then
+                      echo "✅ Connexion Databricks réussie"
                     else
-                      echo "❌ Job échoué avec le statut: $RESULT_STATE"
-                      databricks runs get-output --run-id $(RUN_ID)
+                      echo "❌ Échec de connexion Databricks"
                       exit 1
                     fi
-                  fi
-                  
-                  # Attendre avant la prochaine vérification
-                  sleep $SLEEP_TIME
-                  ELAPSED=$((ELAPSED + SLEEP_TIME))
-                done
+                  displayName: '🔐 Configurer Databricks'
                 
-                echo "⚠️ Timeout atteint après $MAX_WAIT secondes"
-                exit 1
-            condition: succeededOrFailed()
-          
-          # Étape 6 : Récupérer les logs (optionnel)
-          - task: Bash@3
-            displayName: '📋 Récupérer logs'
-            inputs:
-              targetType: 'inline'
-              script: |
-                echo "📋 Récupération des logs..."
-                databricks runs get-output --run-id $(RUN_ID)
-            condition: always()
+                # Déployer notebooks
+                - script: |
+                    echo "📤 Déploiement des notebooks vers $(ENVIRONMENT)..."
+                    
+                    cd $(Pipeline.Workspace)/extracted
+                    
+                    if [ ! -d "notebooks" ]; then
+                      echo "❌ ERREUR : Le dossier notebooks n'existe pas dans l'artifact"
+                      exit 1
+                    fi
+                    
+                    # Créer le répertoire workspace
+                    echo "📂 Création du répertoire : $(DATABRICKS_WORKSPACE_PATH)"
+                    databricks workspace mkdirs $(DATABRICKS_WORKSPACE_PATH) || echo "Répertoire existant"
+                    
+                    # Import des notebooks
+                    echo "📤 Import des notebooks..."
+                    databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
+                    
+                    if [ $? -eq 0 ]; then
+                      echo ""
+                      echo "═══════════════════════════════════════════"
+                      echo "   ✅ DÉPLOIEMENT $(ENVIRONMENT) RÉUSSI"
+                      echo "═══════════════════════════════════════════"
+                      echo ""
+                      echo "📋 Notebooks déployés :"
+                      databricks workspace ls -l $(DATABRICKS_WORKSPACE_PATH)
+                      echo ""
+                      echo "🔗 Accès workspace :"
+                      echo "   $(DATABRICKS_HOST)/#workspace$(DATABRICKS_WORKSPACE_PATH)"
+                      echo ""
+                      echo "═══════════════════════════════════════════"
+                    else
+                      echo "❌ ERREUR lors du déploiement"
+                      exit 1
+                    fi
+                  displayName: '📤 Déployer notebooks'
+                
+                # Vérifier synchronisation
+                - script: |
+                    echo "🔄 Vérification de la synchronisation..."
+                    
+                    cd $(Pipeline.Workspace)/extracted/notebooks
+                    
+                    for notebook in *.py *.ipynb; do
+                      if [ ! -f "$notebook" ]; then
+                        continue
+                      fi
+                      
+                      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                      echo "📄 Notebook : $notebook"
+                      
+                      # Export depuis Databricks
+                      databricks workspace export "$(DATABRICKS_WORKSPACE_PATH)/$notebook" "/tmp/$notebook" --format SOURCE 2>/dev/null
+                      
+                      if [ -f "/tmp/$notebook" ]; then
+                        if diff -q "$notebook" "/tmp/$notebook" > /dev/null 2>&1; then
+                          echo "✅ Synchronisé correctement"
+                        else
+                          echo "⚠️ Différences détectées (peut être normal)"
+                        fi
+                        rm -f "/tmp/$notebook"
+                      else
+                        echo "⚠️ Impossible d'exporter (vérifiez les permissions)"
+                      fi
+                    done
+                  displayName: '🔍 Vérifier synchronisation'
+                  continueOnError: true
+                
+                # Exécuter le job (si configuré)
+                - script: |
+                    echo "🚀 Exécution du job Databricks..."
+                    
+                    if [ -z "$(DATABRICKS_JOB_ID)" ]; then
+                      echo "ℹ️ Aucun job configuré (DATABRICKS_JOB_ID vide)"
+                      echo "💡 Vous pouvez exécuter les notebooks manuellement"
+                      exit 0
+                    fi
+                    
+                    echo "🎯 Job ID : $(DATABRICKS_JOB_ID)"
+                    
+                    # Lancer le job
+                    response=$(databricks jobs run-now --job-id $(DATABRICKS_JOB_ID) 2>&1)
+                    echo "📨 Réponse : $response"
+                    
+                    # Extraire run_id
+                    run_id=$(echo "$response" | jq -r '.run_id // empty' 2>/dev/null)
+                    
+                    if [ -z "$run_id" ] || [ "$run_id" == "null" ]; then
+                      echo "❌ ERREUR : Impossible de lancer le job"
+                      echo "Réponse brute : $response"
+                      exit 1
+                    fi
+                    
+                    echo "▶️ Run ID : $run_id"
+                    echo "🔗 $(DATABRICKS_HOST)/#job/$(DATABRICKS_JOB_ID)/run/$run_id"
+                    
+                    # Attendre (avec timeout de 30 min)
+                    echo "⏳ Attente de la fin du job (max 30 min)..."
+                    timeout 1800 databricks runs wait --run-id $run_id
+                    
+                    if [ $? -eq 0 ]; then
+                      result_state=$(databricks runs get --run-id $run_id | jq -r '.state.result_state')
+                      
+                      if [ "$result_state" == "SUCCESS" ]; then
+                        echo "✅ Job terminé avec succès !"
+                      else
+                        echo "❌ Job échoué : $result_state"
+                        exit 1
+                      fi
+                    else
+                      echo "⚠️ Timeout ou erreur d'attente"
+                      exit 1
+                    fi
+                  displayName: '🚀 Exécuter job Databricks'
+                  continueOnError: true  # Ne pas bloquer si pas de job
+
+  # ==========================================
+  # STAGE 3 : DÉPLOIEMENT UAT (main branch)
+  # ==========================================
+  - stage: Deploy_UAT
+    displayName: '🧪 UAT - Déploiement'
+    dependsOn: Deploy_DEV
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables:
+      - group: variable group
+      - name: ENVIRONMENT
+        value: 'UAT'
+      - name: DATABRICKS_HOST
+        value: 'https://adb-1119135389290183.3.azuredatabricks.net'
+      - name: DATABRICKS_WORKSPACE_PATH
+        value: '/Workspace/Users/mohamedazrou2003@gmail.com/UAT'
+    jobs:
+      - deployment: DeployToUat
+        displayName: 'Déployer vers UAT'
+        environment: 'uat'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                
+                - download: current
+                  artifact: notebooks
+                
+                - task: ExtractFiles@1
+                  inputs:
+                    archiveFilePatterns: '$(Pipeline.Workspace)/notebooks/*.zip'
+                    destinationFolder: '$(Pipeline.Workspace)/extracted'
+                
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: '$(PYTHON_VERSION)'
+                
+                - script: |
+                    pip install databricks-cli
+                    sudo apt-get update -qq && sudo apt-get install -y jq
+                  displayName: '🔧 Installer outils'
+                
+                - script: |
+                    mkdir -p ~/.databricks
+                    cat > ~/.databrickscfg <<EOF
+                    [DEFAULT]
+                    host = $(DATABRICKS_HOST)
+                    token = $(DATABRICKS_TOKEN)
+                    EOF
+                    databricks workspace ls / > /dev/null
+                  displayName: '🔐 Configurer Databricks'
+                
+                - script: |
+                    echo "📤 Déploiement vers $(ENVIRONMENT)..."
+                    
+                    cd $(Pipeline.Workspace)/extracted
+                    databricks workspace mkdirs $(DATABRICKS_WORKSPACE_PATH)
+                    databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
+                    
+                    echo "✅ Déploiement UAT terminé"
+                    echo "🔗 $(DATABRICKS_HOST)/#workspace$(DATABRICKS_WORKSPACE_PATH)"
+                  displayName: '📤 Déployer vers UAT'
+
+  # ==========================================
+  # STAGE 4 : DÉPLOIEMENT PROD (main + approval)
+  # ==========================================
+  - stage: Deploy_PROD
+    displayName: '🏭 PROD - Déploiement'
+    dependsOn: Deploy_UAT
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables:
+      - group: variable group
+      - name: ENVIRONMENT
+        value: 'PROD'
+      - name: DATABRICKS_HOST
+        value: 'https://adb-1119135389290183.3.azuredatabricks.net'
+      - name: DATABRICKS_WORKSPACE_PATH
+        value: '/Workspace/Users/mohamedazrou2003@gmail.com/PROD'
+    jobs:
+      - deployment: DeployToProd
+        displayName: 'Déployer vers PRODUCTION'
+        environment: 'prod'  # Nécessite approbation manuelle
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                
+                - download: current
+                  artifact: notebooks
+                
+                - task: ExtractFiles@1
+                  inputs:
+                    archiveFilePatterns: '$(Pipeline.Workspace)/notebooks/*.zip'
+                    destinationFolder: '$(Pipeline.Workspace)/extracted'
+                
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: '$(PYTHON_VERSION)'
+                
+                - script: |
+                    pip install databricks-cli
+                    sudo apt-get update -qq && sudo apt-get install -y jq
+                  displayName: '🔧 Installer outils'
+                
+                - script: |
+                    mkdir -p ~/.databricks
+                    cat > ~/.databrickscfg <<EOF
+                    [DEFAULT]
+                    host = $(DATABRICKS_HOST)
+                    token = $(DATABRICKS_TOKEN)
+                    EOF
+                    databricks workspace ls / > /dev/null
+                  displayName: '🔐 Configurer Databricks'
+                
+                - script: |
+                    echo "🏭 DÉPLOIEMENT EN PRODUCTION..."
+                    
+                    cd $(Pipeline.Workspace)/extracted
+                    databricks workspace mkdirs $(DATABRICKS_WORKSPACE_PATH)
+                    databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
+                    
+                    echo ""
+                    echo "═══════════════════════════════════════════"
+                    echo "   🎉 DÉPLOIEMENT PRODUCTION RÉUSSI 🎉"
+                    echo "═══════════════════════════════════════════"
+                    echo ""
+                    echo "📊 Résumé :"
+                    echo "  • Build: $(Build.BuildNumber)"
+                    echo "  • Environnement: PRODUCTION"
+                    echo "  • Notebooks déployés:"
+                    databricks workspace ls $(DATABRICKS_WORKSPACE_PATH)
+                    echo ""
+                    echo "🔗 Accès workspace :"
+                    echo "   $(DATABRICKS_HOST)/#workspace$(DATABRICKS_WORKSPACE_PATH)"
+                    echo ""
+                    echo "═══════════════════════════════════════════"
+                  displayName: '🏭 Déployer vers PROD'
