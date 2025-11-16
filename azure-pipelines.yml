@@ -13,33 +13,28 @@ variables:
   - name: DATABRICKS_WORKSPACE_PATH
     value: '/Workspace/Users/mohamedazrou2003@gmail.com'
   - name: DATABRICKS_JOB_ID
-    value: '88667285424105'   # Ton vrai job ID
+    value: '88667285424105'   # Ton vrai Job ID
 
+# =============================================
+# 1. Installer Python et dépendances
+# =============================================
 steps:
-# =============================================
-# 1. Installer Python
-# =============================================
 - task: UsePythonVersion@0
   inputs:
     versionSpec: '3.10'
   displayName: '🐍 Installer Python 3.10'
 
-# =============================================
-# 2. Installer dépendances
-# =============================================
 - script: |
     echo "📦 Installation des dépendances..."
     pip install --upgrade pip
-    pip install databricks-cli
-    pip install jq
+    pip install databricks-cli jq
   displayName: '📦 Installer dépendances'
 
 # =============================================
-# 3. Configurer Databricks CLI (API 2.1)
+# 2. Configurer Databricks CLI (API 2.1)
 # =============================================
 - script: |
     echo "🔐 Configurer Databricks CLI..."
-
     mkdir -p ~/.databricks
 
     cat > ~/.databrickscfg <<EOF
@@ -48,12 +43,36 @@ steps:
     token = $(DATABRICKS_TOKEN)
     EOF
 
-    echo "➡️ Configuration en API 2.1"
+    echo "➡️ Passer en Jobs API 2.1"
     databricks jobs configure --version=2.1
 
     echo "🔌 Test de connexion"
     databricks workspace ls /
   displayName: '🔐 Configurer Databricks CLI'
+
+# =============================================
+# 3. Vérifier structure du projet
+# =============================================
+- script: |
+    echo "📂 Structure du projet :"
+    ls -la
+
+    echo ""
+    echo "📁 Contenu de notebooks/ :"
+    if [ -d "notebooks" ]; then
+      ls -la notebooks/
+      file_count=$(find notebooks -type f \( -name "*.py" -o -name "*.ipynb" \) | wc -l)
+      echo ""
+      echo "📊 Nombre de notebooks trouvés : $file_count"
+      if [ $file_count -eq 0 ]; then
+        echo "⚠️ Aucun notebook trouvé dans notebooks/"
+        exit 1
+      fi
+    else
+      echo "❌ Dossier notebooks/ inexistant"
+      exit 1
+    fi
+  displayName: '🔍 Vérifier structure du projet'
 
 # =============================================
 # 4. Déployer les notebooks
@@ -65,7 +84,7 @@ steps:
   displayName: '📤 Déployer notebooks Databricks'
 
 # =============================================
-# 5. Lancer le job (corrigé + fiable)
+# 5. Lancer le job Databricks (corrigé)
 # =============================================
 - script: |
     echo "🚀 Lancement du job Databricks..."
@@ -77,52 +96,56 @@ steps:
     echo "📨 Réponse brute :"
     echo "$response"
 
-    # Extraire proprement la ligne JSON
-    json_line=$(echo "$response" | grep '{')
+    # EXTRAIRE le JSON complet
+    json_block=$(echo "$response" | sed -n '/{/,/}/p')
+
+    echo "📦 JSON extrait :"
+    echo "$json_block"
 
     # Extraire run_id
-    run_id=$(echo "$json_line" | jq -r '.run_id')
+    run_id=$(echo "$json_block" | jq -r '.run_id')
 
     if [[ -z "$run_id" || "$run_id" == "null" ]]; then
-      echo "❌ ERREUR : Impossible d’extraire run_id"
-      echo "Réponse reçue : $response"
+      echo "❌ Impossible d’extraire run_id"
+      echo "📌 JSON reçu : $json_block"
       exit 1
     fi
 
     echo "✅ Job lancé ! Run ID : $run_id"
 
-    # Enregistrer variable pour l'étape suivante
+    # Stocker run_id pour l’étape suivante
     echo "##vso[task.setvariable variable=RUN_ID]$run_id"
   displayName: '🚀 Lancer job Databricks'
 
 # =============================================
-# 6. Attendre + vérifier le résultat
+# 6. Attendre la fin et vérifier le résultat
 # =============================================
 - script: |
-    echo "⏳ Attente fin job..."
+    echo "⏳ Attente de la fin du job..."
     echo "▶️ Run ID : $(RUN_ID)"
 
-    databricks runs wait --run-id $(RUN_ID)
-    status=$?
+    # Timeout 30 min
+    timeout 1800 databricks runs wait --run-id $(RUN_ID)
+    wait_exit=$?
 
-    if [ $status -ne 0 ]; then
-      echo "❌ Le job a échoué pendant l’attente."
+    if [ $wait_exit -eq 0 ]; then
+      details=$(databricks runs get --run-id $(RUN_ID))
+      result=$(echo "$details" | jq -r '.state.result_state')
+      echo "📊 Resultat : $result"
+
+      if [ "$result" != "SUCCESS" ]; then
+        echo "❌ JOB ÉCHOUÉ"
+        databricks runs get-output --run-id $(RUN_ID)
+        exit 1
+      fi
+      echo "🎉 JOB TERMINÉ AVEC SUCCÈS"
+    elif [ $wait_exit -eq 124 ]; then
+      echo "⏱️ TIMEOUT (30min) : vérifier manuellement"
+      exit 1
+    else
+      echo "❌ Erreur inattendue pendant l’attente du job"
       exit 1
     fi
-
-    details=$(databricks runs get --run-id $(RUN_ID))
-
-    result=$(echo "$details" | jq -r '.state.result_state')
-
-    echo "📊 Resultat : $result"
-
-    if [ "$result" != "SUCCESS" ]; then
-      echo "❌ Job échoué ❗"
-      databricks runs get-output --run-id $(RUN_ID)
-      exit 1
-    fi
-
-    echo "🎉 JOB TERMINÉ AVEC SUCCÈS 🎉"
   displayName: '⏳ Attendre et vérifier résultat'
 
 # =============================================
@@ -132,9 +155,13 @@ steps:
     echo "═══════════════════════════════════════════"
     echo "   📊 FIN DU PIPELINE – TOUT EST OK"
     echo "═══════════════════════════════════════════"
-    echo "Job : $(DATABRICKS_JOB_ID)"
-    echo "Run : $(RUN_ID)"
+    echo "Job ID : $(DATABRICKS_JOB_ID)"
+    echo "Run ID : $(RUN_ID)"
     echo "Workspace : $(DATABRICKS_WORKSPACE_PATH)"
+    echo "Lien Job : $(DATABRICKS_HOST)/#job/$(DATABRICKS_JOB_ID)/run/$(RUN_ID)"
+    echo "Lien Workspace : $(DATABRICKS_HOST)/#workspace$(DATABRICKS_WORKSPACE_PATH)"
+    echo "Date : $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "Build : $(Build.BuildNumber)"
     echo "═══════════════════════════════════════════"
   displayName: '📊 Récapitulatif final'
   condition: always()
