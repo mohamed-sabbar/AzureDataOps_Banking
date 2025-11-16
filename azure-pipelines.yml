@@ -13,7 +13,7 @@ variables:
   - name: DATABRICKS_WORKSPACE_PATH
     value: '/Workspace/Users/mohamedazrou2003@gmail.com'
   - name: DATABRICKS_JOB_ID
-    value: '88667285424105'   # Ton vrai Job ID
+    value: '88667285424105'
 
 # =============================================
 # 1. Installer Python et dépendances
@@ -90,30 +90,22 @@ steps:
     echo "🚀 Lancement du job Databricks..."
     echo "🎯 Job ID : $(DATABRICKS_JOB_ID)"
 
-    # Lancer le job
     response=$(databricks jobs run-now --job-id $(DATABRICKS_JOB_ID))
-
     echo "📨 Réponse brute :"
     echo "$response"
 
-    # EXTRAIRE le JSON complet
+    # Extraire JSON
     json_block=$(echo "$response" | sed -n '/{/,/}/p')
-
-    echo "📦 JSON extrait :"
-    echo "$json_block"
+    echo "📦 JSON extrait : $json_block"
 
     # Extraire run_id
     run_id=$(echo "$json_block" | jq -r '.run_id')
-
     if [[ -z "$run_id" || "$run_id" == "null" ]]; then
       echo "❌ Impossible d’extraire run_id"
-      echo "📌 JSON reçu : $json_block"
       exit 1
     fi
-
     echo "✅ Job lancé ! Run ID : $run_id"
 
-    # Stocker run_id pour l’étape suivante
     echo "##vso[task.setvariable variable=RUN_ID]$run_id"
   displayName: '🚀 Lancer job Databricks'
 
@@ -123,18 +115,15 @@ steps:
 - script: |
     echo "⏳ Attente de la fin du job Run ID : $(RUN_ID)"
 
-    max_attempts=60   # 60 tentatives x 30s = 30 minutes max
+    max_attempts=60
     attempt=0
     sleep_seconds=30
     run_id=$(RUN_ID)
 
     while [ $attempt -lt $max_attempts ]; do
       attempt=$((attempt+1))
-
-      # Récupérer l'état du job
       job_state=$(databricks runs get --run-id $run_id | jq -r '.state.life_cycle_state')
       result_state=$(databricks runs get --run-id $run_id | jq -r '.state.result_state // empty')
-
       echo "⏱️ Tentative $attempt : $job_state / $result_state"
 
       if [ "$job_state" == "TERMINATED" ] || [ "$job_state" == "SKIPPED" ] || [ "$job_state" == "INTERNAL_ERROR" ]; then
@@ -144,7 +133,6 @@ steps:
       sleep $sleep_seconds
     done
 
-    # Vérifier résultat final
     if [ "$result_state" == "SUCCESS" ]; then
         echo "🎉 JOB TERMINÉ AVEC SUCCÈS"
     else
