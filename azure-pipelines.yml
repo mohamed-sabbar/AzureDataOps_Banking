@@ -7,39 +7,265 @@ pool:
   vmImage: 'ubuntu-latest'
 
 variables:
-  - group: variable group  # ton groupe de variables Azure DevOps
+  - group: variable group  # Votre groupe de variables Azure DevOps
+  - name: DATABRICKS_HOST
+    value: 'https://adb-1119135389290183.3.azuredatabricks.net'
+  - name: DATABRICKS_WORKSPACE_PATH
+    value: '/Workspace/Users/mohamedazrou2003@gmail.com'
+  - name: DATABRICKS_JOB_ID
+    value: '89'
 
 steps:
-  # Installer Python
+  # =============================================
+  # 1. Installer Python
+  # =============================================
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '3.10'
+    displayName: '🐍 Installer Python 3.10'
   
-  # Installer requirements
+  # =============================================
+  # 2. Installer dépendances
+  # =============================================
   - script: |
-      pip install -r requirements.txt
+      echo "📦 Installation des dépendances..."
+      pip install --upgrade pip
+      
+      # Installer requirements.txt si existe
+      if [ -f "requirements.txt" ]; then
+        pip install -r requirements.txt
+        echo "✅ requirements.txt installé"
+      else
+        echo "ℹ️ Aucun requirements.txt trouvé"
+      fi
+      
+      # Installer Databricks CLI
       pip install databricks-cli
-    displayName: 'Installer dépendances'
+      echo "✅ Databricks CLI installé"
+      databricks --version
+    displayName: '📦 Installer dépendances'
   
-  # Configuration Databricks CLI
+  # =============================================
+  # 3. Installer jq (pour parser JSON)
+  # =============================================
   - script: |
-      databricks configure --token <<EOF
-      $(DATABRICKS_HOST)
-      $(DATABRICKS_TOKEN)
+      sudo apt-get update -qq
+      sudo apt-get install -y jq
+      jq --version
+    displayName: '🔧 Installer jq'
+  
+  # =============================================
+  # 4. Configurer Databricks CLI (CORRIGÉ)
+  # =============================================
+  - script: |
+      echo "🔐 Configuration Databricks CLI..."
+      
+      # Créer le dossier de configuration
+      mkdir -p ~/.databricks
+      
+      # Créer le fichier de configuration
+      cat > ~/.databrickscfg <<EOF
+      [DEFAULT]
+      host = $(DATABRICKS_HOST)
+      token = $(DATABRICKS_TOKEN)
       EOF
-      echo "🔐 CLI Databricks configurée"
-    displayName: 'Configurer Databricks CLI'
-    env:
-      DATABRICKS_HOST: https://adb-1119135389290183.3.azuredatabricks.net
+      
+      echo "✅ Fichier de configuration créé"
+      
+      # Tester la connexion
+      echo "🔌 Test de connexion..."
+      databricks workspace ls / > /dev/null 2>&1
+      
+      if [ $? -eq 0 ]; then
+        echo "✅ Connexion Databricks réussie !"
+      else
+        echo "❌ ERREUR : Impossible de se connecter à Databricks"
+        echo "Vérifiez DATABRICKS_HOST et DATABRICKS_TOKEN"
+        exit 1
+      fi
+    displayName: '🔐 Configurer Databricks CLI'
   
-  # Déployer les notebooks dans Databricks
+  # =============================================
+  # 5. Vérifier structure du projet
+  # =============================================
   - script: |
-      databricks workspace import_dir notebooks /Workspace/Users/mohamedazrou2003@gmail.com --overwrite
-      echo "📥 Notebooks importés dans Databricks"
-    displayName: 'Déployer notebooks Databricks'
+      echo "📂 Structure du projet :"
+      ls -la
+      
+      echo ""
+      echo "📁 Contenu de notebooks/ :"
+      if [ -d "notebooks" ]; then
+        ls -la notebooks/
+        
+        # Compter les fichiers
+        file_count=$(find notebooks -type f \( -name "*.py" -o -name "*.ipynb" \) | wc -l)
+        echo ""
+        echo "📊 Nombre de notebooks trouvés : $file_count"
+        
+        if [ $file_count -eq 0 ]; then
+          echo "⚠️ ATTENTION : Aucun notebook trouvé dans le dossier notebooks/"
+          exit 1
+        fi
+      else
+        echo "❌ ERREUR : Le dossier notebooks/ n'existe pas"
+        exit 1
+      fi
+    displayName: '🔍 Vérifier structure du projet'
   
-  # Exécuter le job Databricks
+  # =============================================
+  # 6. Déployer les notebooks (AMÉLIORÉ)
+  # =============================================
   - script: |
-      databricks jobs run-now --job-id 89
-      echo "🚀 Job Databricks exécuté"
-    displayName: 'Lancer job Databricks'
+      echo "📤 Déploiement des notebooks vers Databricks..."
+      echo "🎯 Destination : $(DATABRICKS_WORKSPACE_PATH)"
+      
+      # Créer le dossier de destination si nécessaire
+      echo "📂 Création du répertoire workspace..."
+      databricks workspace mkdirs $(DATABRICKS_WORKSPACE_PATH) 2>/dev/null || echo "Répertoire déjà existant"
+      
+      # Déployer tous les notebooks
+      echo "📥 Import des notebooks..."
+      databricks workspace import_dir notebooks $(DATABRICKS_WORKSPACE_PATH) --overwrite
+      
+      if [ $? -eq 0 ]; then
+        echo ""
+        echo "═══════════════════════════════════════════"
+        echo "   ✅ DÉPLOIEMENT RÉUSSI"
+        echo "═══════════════════════════════════════════"
+        echo ""
+        echo "📋 Notebooks déployés :"
+        databricks workspace ls -l $(DATABRICKS_WORKSPACE_PATH)
+        echo ""
+        echo "🔗 Accès workspace :"
+        echo "   $(DATABRICKS_HOST)/#workspace$(DATABRICKS_WORKSPACE_PATH)"
+        echo ""
+        echo "═══════════════════════════════════════════"
+      else
+        echo "❌ ERREUR lors du déploiement des notebooks"
+        exit 1
+      fi
+    displayName: '📤 Déployer notebooks Databricks'
+  
+  # =============================================
+  # 7. Exécuter le job Databricks (CORRIGÉ)
+  # =============================================
+  - script: |
+      echo "🚀 Lancement du job Databricks..."
+      echo "🎯 Job ID : $(DATABRICKS_JOB_ID)"
+      
+      # Lancer le job et capturer la réponse
+      response=$(databricks jobs run-now --job-id $(DATABRICKS_JOB_ID) 2>&1)
+      
+      echo "📨 Réponse du serveur :"
+      echo "$response"
+      
+      # Extraire le run_id
+      run_id=$(echo "$response" | jq -r '.run_id // empty' 2>/dev/null)
+      
+      if [ -z "$run_id" ] || [ "$run_id" == "null" ]; then
+        echo ""
+        echo "❌ ERREUR : Impossible de lancer le job"
+        echo "📋 Vérifiez que :"
+        echo "   • Le job ID $(DATABRICKS_JOB_ID) existe"
+        echo "   • Le job a une configuration valide"
+        echo "   • Votre token a les permissions nécessaires"
+        echo ""
+        echo "Réponse complète : $response"
+        exit 1
+      fi
+      
+      echo ""
+      echo "✅ Job lancé avec succès !"
+      echo "▶️  Run ID : $run_id"
+      echo "🔗 Suivi : $(DATABRICKS_HOST)/#job/$(DATABRICKS_JOB_ID)/run/$run_id"
+      echo ""
+      
+      # Sauvegarder le run_id pour l'étape suivante
+      echo "##vso[task.setvariable variable=RUN_ID]$run_id"
+    displayName: '🚀 Lancer job Databricks'
+  
+  # =============================================
+  # 8. Attendre et vérifier le résultat (NOUVEAU)
+  # =============================================
+  - script: |
+      echo "⏳ Attente de la fin de l'exécution du job..."
+      echo "📊 Run ID : $(RUN_ID)"
+      
+      # Attendre la fin du job (timeout 30 minutes)
+      timeout 1800 databricks runs wait --run-id $(RUN_ID)
+      wait_exit_code=$?
+      
+      echo ""
+      
+      if [ $wait_exit_code -eq 0 ]; then
+        # Job terminé, vérifier le statut
+        echo "🔍 Récupération du statut final..."
+        run_details=$(databricks runs get --run-id $(RUN_ID))
+        
+        life_cycle_state=$(echo "$run_details" | jq -r '.state.life_cycle_state')
+        result_state=$(echo "$run_details" | jq -r '.state.result_state')
+        
+        echo "📊 État du cycle de vie : $life_cycle_state"
+        echo "📊 État du résultat : $result_state"
+        
+        if [ "$result_state" == "SUCCESS" ]; then
+          echo ""
+          echo "═══════════════════════════════════════════"
+          echo "   ✅✅✅ JOB TERMINÉ AVEC SUCCÈS ✅✅✅"
+          echo "═══════════════════════════════════════════"
+          echo ""
+          echo "📊 Détails :"
+          echo "   • Job ID : $(DATABRICKS_JOB_ID)"
+          echo "   • Run ID : $(RUN_ID)"
+          echo "   • État : $result_state"
+          echo ""
+          echo "🔗 Voir les détails :"
+          echo "   $(DATABRICKS_HOST)/#job/$(DATABRICKS_JOB_ID)/run/$(RUN_ID)"
+          echo ""
+          echo "═══════════════════════════════════════════"
+          exit 0
+        else
+          echo ""
+          echo "❌ JOB ÉCHOUÉ : $result_state"
+          echo ""
+          echo "📋 Logs d'erreur :"
+          databricks runs get-output --run-id $(RUN_ID)
+          echo ""
+          echo "🔗 Voir les détails complets :"
+          echo "   $(DATABRICKS_HOST)/#job/$(DATABRICKS_JOB_ID)/run/$(RUN_ID)"
+          exit 1
+        fi
+      elif [ $wait_exit_code -eq 124 ]; then
+        echo "⏱️ TIMEOUT : Le job a dépassé 30 minutes d'exécution"
+        echo "🔗 Vérifier manuellement : $(DATABRICKS_HOST)/#job/$(DATABRICKS_JOB_ID)/run/$(RUN_ID)"
+        exit 1
+      else
+        echo "❌ Erreur lors de l'attente du job (code: $wait_exit_code)"
+        exit 1
+      fi
+    displayName: '⏳ Attendre et vérifier résultat'
+  
+  # =============================================
+  # 9. Récapitulatif final (toujours exécuté)
+  # =============================================
+  - script: |
+      echo ""
+      echo "═══════════════════════════════════════════"
+      echo "   📊 RÉCAPITULATIF DU DÉPLOIEMENT"
+      echo "═══════════════════════════════════════════"
+      echo ""
+      echo "✅ Étapes complétées :"
+      echo "   • Configuration Databricks"
+      echo "   • Déploiement des notebooks"
+      echo "   • Exécution du job"
+      echo ""
+      echo "🔗 Liens utiles :"
+      echo "   • Workspace : $(DATABRICKS_HOST)/#workspace$(DATABRICKS_WORKSPACE_PATH)"
+      echo "   • Job : $(DATABRICKS_HOST)/#job/$(DATABRICKS_JOB_ID)"
+      echo ""
+      echo "📅 Date : $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "🏷️  Build : $(Build.BuildNumber)"
+      echo ""
+      echo "═══════════════════════════════════════════"
+    displayName: '📊 Récapitulatif final'
+    condition: always()
