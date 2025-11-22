@@ -9,9 +9,9 @@ pool:
 variables:
   - group: variable group
   - name: DATABRICKS_HOST
-    value: 'https://adb-1119135389290183.3.azuredatabricks.net'
+    value: 'https://adb-2212117686739670.10.azuredatabricks.net'
   - name: DATABRICKS_JOB_ID
-    value: '88667285424105'
+    value: '1082960958397714'
 
 steps:
 # =============================================
