@@ -7,27 +7,58 @@ pool:
   vmImage: 'ubuntu-latest'
 
 variables:
-- group: variable group   # ton groupe de variables Azure DevOps
+  - group: variable group
+  - name: DATABRICKS_HOST
+    value: 'https://adb-1119135389290183.3.azuredatabricks.net'
+  - name: DATABRICKS_JOB_ID
+    value: '88667285424105'
 
 steps:
+# =============================================
+# 1. Installer Python et Databricks CLI
+# =============================================
 - task: UsePythonVersion@0
   inputs:
     versionSpec: '3.10'
+  displayName: '🐍 Installer Python 3.10'
 
 - script: |
-    pip install -r requirements.txt
-    pip install databricks-cli
-  displayName: 'Installer dépendances'
+    pip install --upgrade pip
+    pip install databricks-cli jq
+    echo "✅ Databricks CLI et jq installés"
+  displayName: '📦 Installer dépendances'
 
+# =============================================
+# 2. Configurer Databricks CLI
+# =============================================
 - script: |
-    export DATABRICKS_HOST=https://adb-2212117686739670.10.azuredatabricks.net
-    export DATABRICKS_TOKEN=$(DATABRICKS_TOKEN)
-    
-    databricks workspace import_dir notebooks /Workspace/Users/redaboukaich99@gmail.com --overwrite
-    echo "✅ Notebooks importés dans Databricks"
-  displayName: 'Déployer notebooks Databricks'
+    mkdir -p ~/.databricks
+    cat > ~/.databrickscfg <<EOF
+    [DEFAULT]
+    host = $(DATABRICKS_HOST)
+    token = $(DATABRICKS_TOKEN)
+    EOF
+    echo "✅ CLI Databricks configurée"
+  displayName: '🔐 Configurer Databricks CLI'
 
+# =============================================
+# 3. Lancer le job Databricks (avec PATH corrigé)
+# =============================================
 - script: |
-    databricks jobs run-now --job-id 89  # remplacer par ton ID_JOB réel
-    echo "🚀 Job Databricks exécuté"
-  displayName: 'Exécuter job Databricks'
+    # Ajouter le dossier des binaires Python locaux au PATH
+    export PATH=$HOME/.local/bin:$PATH
+
+    # Vérifier que databricks CLI est accessible
+    databricks --version
+
+    JOB_ID=$(DATABRICKS_JOB_ID)
+    run_id=$(databricks jobs run-now --job-id $JOB_ID | jq -r '.run_id')
+
+    if [[ -z "$run_id" || "$run_id" == "null" ]]; then
+      echo "❌ Impossible d'extraire run_id"
+      exit 1
+    fi
+
+    echo "✅ Job lancé ! Run ID : $run_id"
+    echo "##vso[task.setvariable variable=RUN_ID]$run_id"
+  displayName: '🚀 Lancer job Databricks'
