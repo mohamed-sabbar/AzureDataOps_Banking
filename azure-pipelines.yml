@@ -7,13 +7,14 @@ pool:
   vmImage: 'ubuntu-latest'
 
 variables:
-  - group: variable group
+  - group: variable group       
   - name: DATABRICKS_HOST
     value: 'https://adb-2212117686739670.10.azuredatabricks.net'
   - name: DATABRICKS_JOB_ID
     value: '1082960958397714'
 
 steps:
+
 # =============================================
 # 1. Installer Python et Databricks CLI
 # =============================================
@@ -42,7 +43,20 @@ steps:
   displayName: '🔐 Configurer Databricks CLI'
 
 # =============================================
-# 3. Lancer le job Databricks (avec PATH corrigé)
+# 3. Déployer les notebooks Databricks
+# =============================================
+- script: |
+    export DATABRICKS_HOST=$(DATABRICKS_HOST)
+    export DATABRICKS_TOKEN=$(DATABRICKS_TOKEN)
+
+    # Importer tous les notebooks du repo local "notebooks" vers le Workspace Databricks
+    databricks workspace import_dir notebooks /Workspace/Users/redaboukaich99@gmail.com --overwrite
+    
+    echo "✅ Notebooks importés dans Databricks"
+  displayName: '🚀 Déployer notebooks Databricks'
+
+# =============================================
+# 4. Lancer le job Databricks
 # =============================================
 - script: |
     # Ajouter le dossier des binaires Python locaux au PATH
