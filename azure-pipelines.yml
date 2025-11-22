@@ -50,7 +50,7 @@ steps:
     export DATABRICKS_TOKEN=$(DATABRICKS_TOKEN)
 
     # Importer tous les notebooks du repo local "notebooks" vers le Workspace Databricks
-    databricks workspace import_dir notebooks /Workspace/Users/redaboukaich99@gmail.com --overwrite
+    databricks workspace import_dir notebooks /Workspace/Users/redaboukaich99@gmail.com/AzureDataOps_Banking/notebooks --overwrite
     
     echo "✅ Notebooks importés dans Databricks"
   displayName: '🚀 Déployer notebooks Databricks'
